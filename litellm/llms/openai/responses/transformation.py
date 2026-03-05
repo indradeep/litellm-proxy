@@ -1,3 +1,9 @@
+import hashlib
+import json
+import os
+import secrets
+import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union, cast, get_type_hints
 
 import httpx
@@ -28,6 +34,72 @@ else:
 
 
 class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
+    @staticmethod
+    def _extract_json_from_sse_payload(payload: str) -> Optional[Dict[str, Any]]:
+        for raw_line in payload.splitlines():
+            line = raw_line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                parsed = json.loads(data)
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return None
+
+    @staticmethod
+    def _is_oca_request(model: str, api_base: Optional[str]) -> bool:
+        if model.startswith("oca/") or model.startswith("responses/oca/"):
+            return True
+        if api_base and "oraclecloud.com" in api_base and "aiservice" in api_base:
+            return True
+        return False
+
+    @staticmethod
+    def _read_oca_access_token(api_key: Optional[str]) -> Optional[str]:
+        if api_key and api_key.strip():
+            return api_key.strip()
+
+        token_file = os.getenv("OCA_ACCESS_TOKEN_FILE", "").strip()
+        if token_file:
+            try:
+                token_value = Path(token_file).read_text(encoding="utf-8").strip()
+                if token_value:
+                    return token_value
+            except OSError:
+                pass
+
+        fallback_enabled = os.getenv("OCA_ENABLE_API_KEY_FALLBACK", "false").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if fallback_enabled:
+            fallback_token = os.getenv("OCA_API_KEY", "").strip()
+            if fallback_token:
+                return fallback_token
+
+        return None
+
+    @staticmethod
+    def _add_oca_headers(headers: dict, model: str, token: str) -> None:
+        token_hash = hashlib.sha256(token.encode("utf-8")).digest()[:4].hex()
+        model_hash = hashlib.sha256(model.encode("utf-8")).digest()[:4].hex()
+        ts_hex = f"{int(time.time()):08x}"[-8:]
+        rnd_hex = secrets.token_hex(4)
+        opc_request_id = f"{token_hash}{model_hash}{ts_hex}{rnd_hex}"
+
+        headers["client"] = os.getenv("OCA_CLIENT_NAME", "litellm-proxy")
+        headers["client-version"] = os.getenv("OCA_CLIENT_VERSION", "0.1.0")
+        headers["client-ide"] = os.getenv("OCA_CLIENT_IDE", "litellm")
+        headers["client-ide-version"] = os.getenv("OCA_CLIENT_IDE_VERSION", "n/a")
+        headers["opc-request-id"] = opc_request_id
+
     @property
     def custom_llm_provider(self) -> LlmProviders:
         return LlmProviders.OPENAI
@@ -165,6 +237,13 @@ class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
                 additional_args={"complete_input_dict": {}},
             )
             raw_response_json = raw_response.json()
+        except Exception:
+            raw_response_json = self._extract_json_from_sse_payload(raw_response.text)
+            if raw_response_json is None:
+                raise OpenAIError(
+                    message=raw_response.text, status_code=raw_response.status_code
+                )
+        try:
             raw_response_json["created_at"] = _safe_convert_created_field(
                 raw_response_json["created_at"]
             )
@@ -191,6 +270,21 @@ class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
         self, headers: dict, model: str, litellm_params: Optional[GenericLiteLLMParams]
     ) -> dict:
         litellm_params = litellm_params or GenericLiteLLMParams()
+        api_base = litellm_params.api_base
+        if self._is_oca_request(model=model, api_base=api_base):
+            api_key = self._read_oca_access_token(api_key=litellm_params.api_key)
+            if not api_key:
+                raise OpenAIError(
+                    status_code=401,
+                    message=(
+                        "Missing OCA bearer token. Configure OCA_ACCESS_TOKEN_FILE or "
+                        "enable OCA_ENABLE_API_KEY_FALLBACK with OCA_API_KEY."
+                    ),
+                )
+            headers.update({"Authorization": f"Bearer {api_key}"})
+            self._add_oca_headers(headers=headers, model=model, token=api_key)
+            return headers
+
         api_key = (
             litellm_params.api_key
             or litellm.api_key

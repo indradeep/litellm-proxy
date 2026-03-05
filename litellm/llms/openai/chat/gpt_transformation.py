@@ -2,6 +2,11 @@
 Support for gpt model family
 """
 
+import hashlib
+import os
+import secrets
+import time
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -687,6 +692,55 @@ class OpenAIGPTConfig(BaseLLMModelInfo, BaseConfig):
 
         return f"{api_base}/{endpoint}"
 
+    @staticmethod
+    def _is_oca_request(model: str, api_base: Optional[str]) -> bool:
+        if model.startswith("oca/") or model.startswith("responses/oca/"):
+            return True
+        if api_base and "oraclecloud.com" in api_base and "aiservice" in api_base:
+            return True
+        return False
+
+    @staticmethod
+    def _read_oca_access_token(api_key: Optional[str]) -> Optional[str]:
+        if api_key and api_key.strip():
+            return api_key.strip()
+
+        token_file = os.getenv("OCA_ACCESS_TOKEN_FILE", "").strip()
+        if token_file:
+            try:
+                token_value = Path(token_file).read_text(encoding="utf-8").strip()
+                if token_value:
+                    return token_value
+            except OSError:
+                pass
+
+        fallback_enabled = os.getenv("OCA_ENABLE_API_KEY_FALLBACK", "false").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if fallback_enabled:
+            fallback_token = os.getenv("OCA_API_KEY", "").strip()
+            if fallback_token:
+                return fallback_token
+
+        return None
+
+    @staticmethod
+    def _add_oca_headers(headers: dict, model: str, token: str) -> None:
+        token_hash = hashlib.sha256(token.encode("utf-8")).digest()[:4].hex()
+        model_hash = hashlib.sha256(model.encode("utf-8")).digest()[:4].hex()
+        ts_hex = f"{int(time.time()):08x}"[-8:]
+        rnd_hex = secrets.token_hex(4)
+        opc_request_id = f"{token_hash}{model_hash}{ts_hex}{rnd_hex}"
+
+        headers["client"] = os.getenv("OCA_CLIENT_NAME", "litellm-proxy")
+        headers["client-version"] = os.getenv("OCA_CLIENT_VERSION", "0.1.0")
+        headers["client-ide"] = os.getenv("OCA_CLIENT_IDE", "litellm")
+        headers["client-ide-version"] = os.getenv("OCA_CLIENT_IDE_VERSION", "n/a")
+        headers["opc-request-id"] = opc_request_id
+
     def validate_environment(
         self,
         headers: dict,
@@ -697,8 +751,21 @@ class OpenAIGPTConfig(BaseLLMModelInfo, BaseConfig):
         api_key: Optional[str] = None,
         api_base: Optional[str] = None,
     ) -> dict:
-        if api_key is not None:
-            headers["Authorization"] = f"Bearer {api_key}"
+        if self._is_oca_request(model=model, api_base=api_base):
+            oca_token = self._read_oca_access_token(api_key=api_key)
+            if not oca_token:
+                raise OpenAIError(
+                    status_code=401,
+                    message=(
+                        "Missing OCA bearer token. Configure OCA_ACCESS_TOKEN_FILE or "
+                        "enable OCA_ENABLE_API_KEY_FALLBACK with OCA_API_KEY."
+                    ),
+                    headers=cast(httpx.Headers, {}),
+                )
+            headers["Authorization"] = f"Bearer {oca_token}"
+            self._add_oca_headers(headers=headers, model=model, token=oca_token)
+        elif api_key is not None and api_key.strip():
+            headers["Authorization"] = f"Bearer {api_key.strip()}"
 
         # Ensure Content-Type is set to application/json
         if "content-type" not in headers and "Content-Type" not in headers:
