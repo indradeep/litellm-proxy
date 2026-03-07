@@ -1547,7 +1547,10 @@ if TYPE_CHECKING:
     from .llms.moonshot.chat.transformation import MoonshotChatConfig as MoonshotChatConfig
     from .llms.docker_model_runner.chat.transformation import DockerModelRunnerChatConfig as DockerModelRunnerChatConfig
     from .llms.v0.chat.transformation import V0ChatConfig as V0ChatConfig
+    from .llms.oca.chat.transformation import OCAChatConfig as OCAChatConfig
+    from .llms.oca.responses.transformation import OCAResponsesAPIConfig as OCAResponsesAPIConfig
     from .llms.oci.chat.transformation import OCIChatConfig as OCIChatConfig
+    from .llms.oci.embed.transformation import OCIEmbeddingConfig as OCIEmbeddingConfig
     from .llms.morph.chat.transformation import MorphChatConfig as MorphChatConfig
     from .llms.ragflow.chat.transformation import RAGFlowConfig as RAGFlowConfig
     from .llms.lambda_ai.chat.transformation import LambdaAIChatConfig as LambdaAIChatConfig

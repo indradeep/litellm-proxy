@@ -2420,6 +2420,53 @@ def completion(  # type: ignore # noqa: PLR0915
                 encoding=_get_encoding(),
                 stream=stream,
             )
+        elif custom_llm_provider == "oca":
+            # Oracle Code Assist — uses base_llm_http_handler so OCAChatConfig
+            # can handle file-based token auth and URL construction.
+            api_base = (
+                api_base
+                or litellm.api_base
+                or get_secret_str("OCA_API_BASE")
+            )
+
+            headers = headers or litellm.headers or {}
+
+            # OCA always returns SSE (text/event-stream) regardless of
+            # the stream parameter.  Force streaming at the HTTP level
+            # so the handler reads chunks properly.
+            stream = True
+            optional_params["stream"] = True
+
+            ## COMPLETION CALL
+            try:
+                response = base_llm_http_handler.completion(
+                    model=model,
+                    messages=messages,
+                    headers=headers,
+                    model_response=model_response,
+                    api_key=api_key,
+                    api_base=api_base,
+                    acompletion=acompletion,
+                    logging_obj=logging,
+                    optional_params=optional_params,
+                    litellm_params=litellm_params,
+                    shared_session=shared_session,
+                    timeout=timeout,
+                    client=client,
+                    custom_llm_provider=custom_llm_provider,
+                    encoding=_get_encoding(),
+                    stream=True,
+                    provider_config=provider_config,
+                )
+            except Exception as e:
+                ## LOGGING - log the original exception returned
+                logging.post_call(
+                    input=messages,
+                    api_key=api_key,
+                    original_response=str(e),
+                    additional_args={"headers": headers},
+                )
+                raise e
         elif custom_llm_provider == "cometapi":
             api_key = (
                 api_key
@@ -5680,6 +5727,36 @@ def embedding(  # noqa: PLR0915
                 aembedding=aembedding,
                 litellm_params={},
             )
+        elif custom_llm_provider == "oci":
+            # OCI embedding uses the official OCI Python SDK
+            # (oci.generative_ai_inference.GenerativeAiInferenceClient)
+            # which handles all auth/signing internally.
+            from litellm.llms.oci.embed.transformation import oci_embed
+
+            if aembedding is True:
+                import asyncio
+
+                async def _oci_aembedding():
+                    loop = asyncio.get_event_loop()
+                    return await loop.run_in_executor(
+                        None,
+                        lambda: oci_embed(
+                            model=model,
+                            input=input,
+                            optional_params=optional_params,
+                            logging_obj=logging,
+                            api_key=api_key,
+                        ),
+                    )
+                response = _oci_aembedding()
+            else:
+                response = oci_embed(
+                    model=model,
+                    input=input,
+                    optional_params=optional_params,
+                    logging_obj=logging,
+                    api_key=api_key,
+                )
         else:
             raise LiteLLMUnknownProvider(
                 model=model, custom_llm_provider=custom_llm_provider
