@@ -1,3 +1,4 @@
+import json
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union, cast, get_type_hints
 
 import httpx
@@ -28,6 +29,23 @@ else:
 
 
 class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
+    @staticmethod
+    def _extract_json_from_sse_payload(payload: str) -> Optional[Dict[str, Any]]:
+        for raw_line in payload.splitlines():
+            line = raw_line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                parsed = json.loads(data)
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return None
+
     @property
     def custom_llm_provider(self) -> LlmProviders:
         return LlmProviders.OPENAI
@@ -165,6 +183,13 @@ class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
                 additional_args={"complete_input_dict": {}},
             )
             raw_response_json = raw_response.json()
+        except Exception:
+            raw_response_json = self._extract_json_from_sse_payload(raw_response.text)
+            if raw_response_json is None:
+                raise OpenAIError(
+                    message=raw_response.text, status_code=raw_response.status_code
+                )
+        try:
             raw_response_json["created_at"] = _safe_convert_created_field(
                 raw_response_json["created_at"]
             )
@@ -191,6 +216,7 @@ class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
         self, headers: dict, model: str, litellm_params: Optional[GenericLiteLLMParams]
     ) -> dict:
         litellm_params = litellm_params or GenericLiteLLMParams()
+
         api_key = (
             litellm_params.api_key
             or litellm.api_key

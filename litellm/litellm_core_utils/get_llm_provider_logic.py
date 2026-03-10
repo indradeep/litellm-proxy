@@ -439,6 +439,8 @@ def get_llm_provider(  # noqa: PLR0915
         # cometapi models
         elif model.startswith("cometapi/"):
             custom_llm_provider = "cometapi"
+        elif model.startswith("oca/"):
+            custom_llm_provider = "oca"
         elif model.startswith("oci/"):
             custom_llm_provider = "oci"
         elif model.startswith("compactifai/"):

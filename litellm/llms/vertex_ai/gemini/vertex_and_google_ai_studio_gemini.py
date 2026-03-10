@@ -1029,7 +1029,7 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
                 elif isinstance(value, list):
                     optional_params["stop_sequences"] = value
             elif param == "max_tokens" or param == "max_completion_tokens":
-                optional_params["max_output_tokens"] = value
+                optional_params["maxOutputTokens"] = value
             elif param == "response_format" and isinstance(value, dict):  # type: ignore
                 self.apply_response_schema_transformation(
                     value=value, optional_params=optional_params, model=model

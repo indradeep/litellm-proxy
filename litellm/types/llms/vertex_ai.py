@@ -201,7 +201,7 @@ class GenerationConfig(TypedDict, total=False):
     top_p: float
     top_k: float
     candidate_count: int
-    max_output_tokens: int
+    maxOutputTokens: int
     stop_sequences: List[str]
     presence_penalty: float
     frequency_penalty: float

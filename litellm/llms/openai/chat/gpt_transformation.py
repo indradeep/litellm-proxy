@@ -2,6 +2,7 @@
 Support for gpt model family
 """
 
+import os
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -697,8 +698,8 @@ class OpenAIGPTConfig(BaseLLMModelInfo, BaseConfig):
         api_key: Optional[str] = None,
         api_base: Optional[str] = None,
     ) -> dict:
-        if api_key is not None:
-            headers["Authorization"] = f"Bearer {api_key}"
+        if api_key is not None and api_key.strip():
+            headers["Authorization"] = f"Bearer {api_key.strip()}"
 
         # Ensure Content-Type is set to application/json
         if "content-type" not in headers and "Content-Type" not in headers:
