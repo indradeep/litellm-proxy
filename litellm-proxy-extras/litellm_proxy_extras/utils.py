@@ -422,9 +422,9 @@ class ProxyExtrasDBManager:
                                         failed_migration
                                     )
                                     logger.info(
-                                        f"✅ Migration {failed_migration} resolved."
+                                        f"✅ Migration {failed_migration} resolved. Re-running migrate deploy for remaining migrations..."
                                     )
-                                    return True
+                                    continue  # re-run migrate deploy for remaining pending migrations
                                 else:
                                     logger.info(
                                         f"Found failed migration: {failed_migration}, marking as rolled back"
@@ -527,7 +527,8 @@ class ProxyExtrasDBManager:
                                     ProxyExtrasDBManager._resolve_specific_migration(
                                         migration_name
                                     )
-                                    logger.info("✅ Migration resolved.")
+                                    logger.info("✅ Migration resolved. Re-running migrate deploy for remaining migrations...")
+                                    continue  # re-run migrate deploy for remaining pending migrations
                             else:
                                 # Unknown P3018 error - log and re-raise for safety
                                 logger.warning(

@@ -191,3 +191,46 @@ test-llm-translation-single: install-test-deps
 	poetry run pytest tests/llm_translation/$(FILE) \
 		--junitxml=test-results/junit.xml \
 		-v --tb=short --maxfail=100 --timeout=300
+
+# ── ai-infra local-customizations helpers ────────────────────────────────────
+# These targets support the local/customizations branch and are not part of
+# upstream. Run `make ai-sync` after every `git merge upstream/main`.
+
+.PHONY: ai-sync ai-check ai-verify ai-restart
+
+AI_VENV_PY   := .venv/bin/python3
+AI_PROXY_URL := http://localhost:4000
+AI_KEY       := $(shell grep LITELLM_MASTER_KEY ../../config/litellm-proxy/.env 2>/dev/null | cut -d= -f2-)
+
+## Run after every `git merge upstream/main` or `uv sync` to restore editable install.
+ai-sync:
+	@echo "→ Syncing uv dependencies ..."
+	uv sync --all-extras
+	@echo "→ Re-installing litellm as editable (preserves OCA/OCI customizations) ..."
+	uv pip install -e .
+	@echo "✅ Done. Run: make ai-check  to verify, then: make ai-restart  to reload."
+
+## Verify OCA/OCI custom providers are loaded from the source tree (not pip package).
+ai-check:
+	@echo "→ litellm source:"
+	@$(AI_VENV_PY) -c "import litellm; print('   ', litellm.__file__)"
+	@$(AI_VENV_PY) -c "from litellm.types.utils import LlmProviders; ok=hasattr(LlmProviders,'OCA'); print('  OCA provider:', '✅' if ok else '❌ MISSING – run: make ai-sync')"
+	@$(AI_VENV_PY) -c "from litellm.llms.oca.chat.transformation import OCAChatConfig; print('  OCAChatConfig: ✅')" 2>/dev/null || echo "  OCAChatConfig: ❌ MISSING – run: make ai-sync"
+	@$(AI_VENV_PY) -c "from litellm.llms.oci.embed.transformation import OCIEmbeddingConfig; print('  OCIEmbeddingConfig: ✅')" 2>/dev/null || echo "  OCIEmbeddingConfig: ❌"
+
+## Restart the litellm-proxy launchd service.
+ai-restart:
+	launchctl kickstart -k gui/$$(id -u)/com.ai-infra.litellm-proxy
+	@echo "✅ Proxy restarted."
+
+## Smoke-test OCA models against the running proxy.
+ai-verify:
+	@echo "→ /v1/models (OCA):"
+	@curl -s $(AI_PROXY_URL)/v1/models -H "Authorization: Bearer $(AI_KEY)" \
+	  | python3 -c "import sys,json; ids=[m['id'] for m in json.load(sys.stdin).get('data',[])]; [print('  ✅',id) for id in ids if 'gpt-5' in id] or print('  ❌ No OCA models found')"
+	@echo "→ gpt-5.2 chat:"
+	@curl -s -X POST $(AI_PROXY_URL)/v1/chat/completions \
+	  -H "Content-Type: application/json" -H "Authorization: Bearer $(AI_KEY)" \
+	  -d '{"model":"gpt-5.2","messages":[{"role":"user","content":"Say OK"}],"max_tokens":5,"stream":true}' \
+	  | head -c 150
+	@echo ""
