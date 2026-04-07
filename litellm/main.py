@@ -5813,36 +5813,6 @@ def embedding(  # noqa: PLR0915
                 aembedding=aembedding,
                 litellm_params={},
             )
-        elif custom_llm_provider == "oci":
-            # OCI embedding uses the official OCI Python SDK
-            # (oci.generative_ai_inference.GenerativeAiInferenceClient)
-            # which handles all auth/signing internally.
-            from litellm.llms.oci.embed.transformation import oci_embed
-
-            if aembedding is True:
-                import asyncio
-
-                async def _oci_aembedding():
-                    loop = asyncio.get_event_loop()
-                    return await loop.run_in_executor(
-                        None,
-                        lambda: oci_embed(
-                            model=model,
-                            input=input,
-                            optional_params=optional_params,
-                            logging_obj=logging,
-                            api_key=api_key,
-                        ),
-                    )
-                response = _oci_aembedding()
-            else:
-                response = oci_embed(
-                    model=model,
-                    input=input,
-                    optional_params=optional_params,
-                    logging_obj=logging,
-                    api_key=api_key,
-                )
         else:
             raise LiteLLMUnknownProvider(
                 model=model, custom_llm_provider=custom_llm_provider

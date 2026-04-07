@@ -164,17 +164,145 @@ class OCIEmbeddingConfig(BaseEmbeddingConfig):
         stream: Optional[bool] = None,
         fake_stream: Optional[bool] = None,
     ):
-        """Delegate to OCIChatConfig's signing logic."""
-        return self._chat_config.sign_request(
-            headers=headers,
-            optional_params=optional_params,
-            request_data=request_data,
-            api_base=api_base,
-            api_key=api_key,
-            model=model,
-            stream=stream,
-            fake_stream=fake_stream,
+        """
+        Sign request using compact JSON serialization.
+
+        The base HTTP handler's aembedding() method sends the body via
+        httpx's ``json=`` parameter, which serializes with compact separators
+        (no spaces: ``separators=(',', ':')``). The OCI signature includes a
+        SHA-256 hash of the body, so the signing step must hash the *exact*
+        bytes that will be sent on the wire. We achieve this by pre-serializing
+        ``request_data`` with compact separators, then passing the resulting
+        dict (which preserves key order) to the parent signer. The parent
+        signer will call ``json.dumps()`` again with default separators, but
+        since we intercept both manual and SDK paths, we directly compute the
+        hash from the compact encoding.
+        """
+        import json as _json
+        import hashlib as _hashlib
+        import base64 as _base64
+        from litellm.llms.oci.chat.transformation import (
+            sha256_base64,
+            build_signature_string,
+            load_private_key_from_str,
+            load_private_key_from_file,
+            OCIRequestWrapper,
         )
+        import datetime as _datetime
+        from urllib.parse import urlparse as _urlparse
+
+        # Compact body — matches what httpx sends via json= parameter
+        compact_body = _json.dumps(request_data, separators=(',', ':')).encode("utf-8")
+
+        oci_signer = optional_params.get("oci_signer")
+
+        if oci_signer is not None:
+            # OCI SDK Signer path
+            method = str(optional_params.get("method", "POST")).upper()
+            prepared_headers = headers.copy()
+            prepared_headers.setdefault("content-type", "application/json")
+            prepared_headers.setdefault("content-length", str(len(compact_body)))
+
+            request_wrapper = OCIRequestWrapper(
+                method=method, url=api_base, headers=prepared_headers, body=compact_body
+            )
+
+            from litellm.llms.oci.common_utils import OCIError
+            try:
+                oci_signer.do_request_sign(request_wrapper, enforce_content_headers=True)
+            except Exception as e:
+                raise OCIError(
+                    status_code=500,
+                    message=f"Failed to sign embedding request with oci_signer: {e}",
+                ) from e
+
+            headers.update(request_wrapper.headers)
+            return headers, compact_body
+
+        # Manual credential signing path
+        oci_region = optional_params.get("oci_region", "us-ashburn-1")
+        oci_user = optional_params.get("oci_user")
+        oci_fingerprint = optional_params.get("oci_fingerprint")
+        oci_tenancy = optional_params.get("oci_tenancy")
+        oci_key = optional_params.get("oci_key")
+        oci_key_file = optional_params.get("oci_key_file")
+
+        method = str(optional_params.get("method", "POST")).upper()
+        parsed = _urlparse(api_base)
+        path = parsed.path or "/"
+        host = parsed.netloc
+
+        date = _datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+        content_type = headers.get("content-type", "application/json")
+        content_length = str(len(compact_body))
+        x_content_sha256 = sha256_base64(compact_body)
+
+        headers_to_sign = {
+            "date": date,
+            "host": host,
+            "content-type": content_type,
+            "content-length": content_length,
+            "x-content-sha256": x_content_sha256,
+        }
+
+        signed_headers_list = [
+            "date", "(request-target)", "host",
+            "content-length", "content-type", "x-content-sha256",
+        ]
+        signing_string = build_signature_string(
+            method, path, headers_to_sign, signed_headers_list
+        )
+
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        oci_key_content = None
+        if oci_key and isinstance(oci_key, str):
+            oci_key_content = oci_key.replace("\\n", "\n")
+            if "\r\n" in oci_key_content:
+                oci_key_content = oci_key_content.replace("\r\n", "\n")
+
+        private_key = (
+            load_private_key_from_str(oci_key_content)
+            if oci_key_content
+            else load_private_key_from_file(oci_key_file)
+            if oci_key_file
+            else None
+        )
+
+        if private_key is None:
+            from litellm.llms.oci.common_utils import OCIError
+            raise OCIError(
+                status_code=400,
+                message="Private key required for OCI embedding auth.",
+            )
+
+        signature = private_key.sign(
+            signing_string.encode("utf-8"),
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+        signature_b64 = _base64.b64encode(signature).decode()
+
+        key_id = f"{oci_tenancy}/{oci_user}/{oci_fingerprint}"
+        authorization = (
+            'Signature version="1",'
+            f'keyId="{key_id}",'
+            'algorithm="rsa-sha256",'
+            f'headers="{" ".join(signed_headers_list)}",'
+            f'signature="{signature_b64}"'
+        )
+
+        headers.update({
+            "authorization": authorization,
+            "date": date,
+            "host": host,
+            "content-type": content_type,
+            "content-length": content_length,
+            "x-content-sha256": x_content_sha256,
+        })
+
+        return headers, None
 
     def transform_embedding_request(
         self,
