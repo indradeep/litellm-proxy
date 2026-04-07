@@ -11,8 +11,7 @@ Run checks for:
 import asyncio
 import re
 import time
-from typing import (TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union,
-                    cast)
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union, cast
 
 from fastapi import HTTPException, Request, status
 from pydantic import BaseModel
@@ -21,33 +20,50 @@ import litellm
 from litellm._logging import verbose_proxy_logger
 from litellm.caching.caching import DualCache
 from litellm.caching.dual_cache import LimitedSizeOrderedDict
-from litellm.constants import (CLI_JWT_EXPIRATION_HOURS, CLI_JWT_TOKEN_NAME,
-                               DEFAULT_ACCESS_GROUP_CACHE_TTL,
-                               DEFAULT_IN_MEMORY_TTL,
-                               DEFAULT_MANAGEMENT_OBJECT_IN_MEMORY_CACHE_TTL,
-                               DEFAULT_MAX_RECURSE_DEPTH,
-                               EMAIL_BUDGET_ALERT_MAX_SPEND_ALERT_PERCENTAGE)
+from litellm.constants import (
+    CLI_JWT_EXPIRATION_HOURS,
+    CLI_JWT_TOKEN_NAME,
+    DEFAULT_ACCESS_GROUP_CACHE_TTL,
+    DEFAULT_IN_MEMORY_TTL,
+    DEFAULT_MANAGEMENT_OBJECT_IN_MEMORY_CACHE_TTL,
+    DEFAULT_MAX_RECURSE_DEPTH,
+    EMAIL_BUDGET_ALERT_MAX_SPEND_ALERT_PERCENTAGE,
+)
+from litellm.litellm_core_utils.dd_tracing import tracer
 from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
-from litellm.proxy._types import (RBAC_ROLES, CallInfo,
-                                  LiteLLM_AccessGroupTable,
-                                  LiteLLM_BudgetTable, LiteLLM_EndUserTable,
-                                  Litellm_EntityType, LiteLLM_JWTAuth,
-                                  LiteLLM_ObjectPermissionTable,
-                                  LiteLLM_OrganizationMembershipTable,
-                                  LiteLLM_OrganizationTable,
-                                  LiteLLM_ProjectTableCachedObj,
-                                  LiteLLM_TagTable, LiteLLM_TeamMembership,
-                                  LiteLLM_TeamTable,
-                                  LiteLLM_TeamTableCachedObj,
-                                  LiteLLM_UserTable, LiteLLMRoutes,
-                                  LitellmUserRoles, NewTeamRequest,
-                                  ProxyErrorTypes, ProxyException,
-                                  RoleBasedPermissions, SpecialModelNames,
-                                  UserAPIKeyAuth)
+from litellm.proxy._types import (
+    RBAC_ROLES,
+    CallInfo,
+    LiteLLM_AccessGroupTable,
+    LiteLLM_BudgetTable,
+    LiteLLM_EndUserTable,
+    Litellm_EntityType,
+    LiteLLM_JWTAuth,
+    LiteLLM_ManagedVectorStoresTable,
+    LiteLLM_ObjectPermissionTable,
+    LiteLLM_OrganizationMembershipTable,
+    LiteLLM_OrganizationTable,
+    LiteLLM_ProjectTableCachedObj,
+    LiteLLM_TagTable,
+    LiteLLM_TeamMembership,
+    LiteLLM_TeamTable,
+    LiteLLM_TeamTableCachedObj,
+    LiteLLM_UserTable,
+    LiteLLMRoutes,
+    LitellmUserRoles,
+    NewTeamRequest,
+    ProxyErrorTypes,
+    ProxyException,
+    RoleBasedPermissions,
+    SpecialModelNames,
+    UserAPIKeyAuth,
+)
 from litellm.proxy.auth.route_checks import RouteChecks
 from litellm.proxy.db.exception_handler import PrismaDBExceptionHandler
 from litellm.proxy.guardrails.tool_name_extraction import (
-    TOOL_CAPABLE_CALL_TYPES, extract_request_tool_names)
+    TOOL_CAPABLE_CALL_TYPES,
+    extract_request_tool_names,
+)
 from litellm.proxy.route_llm_request import route_request
 from litellm.proxy.utils import PrismaClient, ProxyLogging, log_db_metrics
 from litellm.router import Router
@@ -149,9 +165,24 @@ def _is_model_cost_zero(
                 )
                 return False
 
-            # This model has zero cost explicitly configured
+            # Costs are 0 — verify this is from explicit configuration,
+            # not from defaulted sparse auto-registration entries.
+            # See: https://github.com/BerriAI/litellm/issues/24770
+            safe_name = str(model_name).replace("\n", "").replace("\r", "")
+            if not _is_cost_explicitly_configured(model_name, llm_router):
+                verbose_proxy_logger.debug(
+                    "Model %s has zero cost but no explicit cost "
+                    "configuration in model_cost entry — treating as unknown "
+                    "cost (enforce budget)",
+                    safe_name,
+                )
+                return False
+
             verbose_proxy_logger.debug(
-                f"Model {model_name} has zero cost explicitly configured (input: {input_cost}, output: {output_cost})"
+                "Model %s has zero cost explicitly configured (input: %s, output: %s)",
+                safe_name,
+                input_cost,
+                output_cost,
             )
 
         except Exception as e:
@@ -163,6 +194,33 @@ def _is_model_cost_zero(
 
     # All models checked have zero cost
     return True
+
+
+def _is_cost_explicitly_configured(
+    model: str, llm_router: "Router"
+) -> bool:
+    """
+    Check if any deployment in the model group has cost fields explicitly
+    set in its litellm.model_cost entry.
+
+    When Router._create_deployment() registers a model not in the global
+    cost map, it creates a sparse entry like {"id": "<hash>"} with no cost
+    fields. _get_model_info_helper() then defaults missing costs to 0.
+    This function detects that scenario by checking the raw model_cost entry.
+    """
+    for deployment in llm_router.model_list:
+        if deployment.get("model_name") != model:
+            continue
+        model_id = deployment.get("model_info", {}).get("id")
+        if model_id is None:
+            continue
+        raw_entry = litellm.model_cost.get(model_id, {})
+        if (
+            "input_cost_per_token" in raw_entry
+            or "output_cost_per_token" in raw_entry
+        ):
+            return True
+    return False
 
 
 async def _run_project_checks(
@@ -281,8 +339,7 @@ def _guardrail_modification_check(
     if not _request_metadata.get("guardrails"):
         return
 
-    from litellm.proxy.guardrails.guardrail_helpers import \
-        can_modify_guardrails
+    from litellm.proxy.guardrails.guardrail_helpers import can_modify_guardrails
 
     if not can_modify_guardrails(team_object):
         raise HTTPException(
@@ -304,8 +361,9 @@ async def check_tools_allowlist(
     effective allowlist is read from valid_token.metadata and valid_token.team_metadata.
     Raises ProxyException with tool_access_denied if a tool is not allowed.
     """
-    from litellm.litellm_core_utils.api_route_to_call_types import \
-        get_call_types_for_route
+    from litellm.litellm_core_utils.api_route_to_call_types import (
+        get_call_types_for_route,
+    )
 
     if valid_token is None:
         return
@@ -388,30 +446,31 @@ async def common_checks(  # noqa: PLR0915
     # 1. If team is blocked
     if team_object is not None and team_object.blocked is True:
         raise Exception(
-            f"Team={team_object.team_id} is blocked. Update via `/team/unblock` if your admin."
+            f"Team={team_object.team_id} is blocked. Update via `/team/unblock` if you're an admin."
         )
 
     # 2. If team can call model
     if _model and team_object:
-        if not await can_team_access_model(
-            model=_model,
-            team_object=team_object,
-            llm_router=llm_router,
-            team_model_aliases=valid_token.team_model_aliases if valid_token else None,
-        ):
-            raise ProxyException(
-                message=f"Team not allowed to access model. Team={team_object.team_id}, Model={_model}. Allowed team models = {team_object.models}",
-                type=ProxyErrorTypes.team_model_access_denied,
-                param="model",
-                code=status.HTTP_401_UNAUTHORIZED,
-            )
+        with tracer.trace("litellm.proxy.auth.common_checks.can_team_access_model"):
+            if not await can_team_access_model(
+                model=_model,
+                team_object=team_object,
+                llm_router=llm_router,
+                team_model_aliases=valid_token.team_model_aliases
+                if valid_token
+                else None,
+            ):
+                raise ProxyException(
+                    message=f"Team not allowed to access model. Team={team_object.team_id}, Model={_model}. Allowed team models = {team_object.models}",
+                    type=ProxyErrorTypes.team_model_access_denied,
+                    param="model",
+                    code=status.HTTP_401_UNAUTHORIZED,
+                )
 
     # Require trace id for agent keys when agent has require_trace_id_on_calls_by_agent
     if valid_token is not None and valid_token.agent_id:
-        from litellm.proxy.agent_endpoints.agent_registry import \
-            global_agent_registry
-        from litellm.proxy.litellm_pre_call_utils import \
-            get_chain_id_from_headers
+        from litellm.proxy.agent_endpoints.agent_registry import global_agent_registry
+        from litellm.proxy.litellm_pre_call_utils import get_chain_id_from_headers
 
         agent = global_agent_registry.get_agent_by_id(agent_id=valid_token.agent_id)
         if agent is not None:
@@ -431,54 +490,62 @@ async def common_checks(  # noqa: PLR0915
 
     ## 2.1 If user can call model (if personal key)
     if _model and team_object is None and user_object is not None:
-        await can_user_call_model(
-            model=_model,
-            llm_router=llm_router,
-            user_object=user_object,
-        )
+        with tracer.trace("litellm.proxy.auth.common_checks.can_user_call_model"):
+            await can_user_call_model(
+                model=_model,
+                llm_router=llm_router,
+                user_object=user_object,
+            )
 
     # 1.1 - 2.2 - 3.0.2 - 3.0.3: Project checks (blocked, model access, budget)
-    await _run_project_checks(
-        project_object=project_object,
-        _model=_model,
-        llm_router=llm_router,
-        skip_budget_checks=skip_budget_checks,
-        valid_token=valid_token,
-        proxy_logging_obj=proxy_logging_obj,
-    )
+    with tracer.trace("litellm.proxy.auth.common_checks.run_project_checks"):
+        await _run_project_checks(
+            project_object=project_object,
+            _model=_model,
+            llm_router=llm_router,
+            skip_budget_checks=skip_budget_checks,
+            valid_token=valid_token,
+            proxy_logging_obj=proxy_logging_obj,
+        )
 
     # If this is a free model, skip all budget checks
     if not skip_budget_checks:
         # 3. If team is in budget
-        await _team_max_budget_check(
-            team_object=team_object,
-            proxy_logging_obj=proxy_logging_obj,
-            valid_token=valid_token,
-        )
+        with tracer.trace("litellm.proxy.auth.common_checks.team_max_budget_check"):
+            await _team_max_budget_check(
+                team_object=team_object,
+                proxy_logging_obj=proxy_logging_obj,
+                valid_token=valid_token,
+            )
 
         # 3.0.5. If team is over soft budget (alert only, doesn't block)
-        await _team_soft_budget_check(
-            team_object=team_object,
-            proxy_logging_obj=proxy_logging_obj,
-            valid_token=valid_token,
-        )
+        with tracer.trace("litellm.proxy.auth.common_checks.team_soft_budget_check"):
+            await _team_soft_budget_check(
+                team_object=team_object,
+                proxy_logging_obj=proxy_logging_obj,
+                valid_token=valid_token,
+            )
 
         # 3.1. If organization is in budget
-        await _organization_max_budget_check(
-            valid_token=valid_token,
-            team_object=team_object,
-            prisma_client=prisma_client,
-            user_api_key_cache=user_api_key_cache,
-            proxy_logging_obj=proxy_logging_obj,
-        )
+        with tracer.trace(
+            "litellm.proxy.auth.common_checks.organization_max_budget_check"
+        ):
+            await _organization_max_budget_check(
+                valid_token=valid_token,
+                team_object=team_object,
+                prisma_client=prisma_client,
+                user_api_key_cache=user_api_key_cache,
+                proxy_logging_obj=proxy_logging_obj,
+            )
 
-        await _tag_max_budget_check(
-            request_body=request_body,
-            prisma_client=prisma_client,
-            user_api_key_cache=user_api_key_cache,
-            proxy_logging_obj=proxy_logging_obj,
-            valid_token=valid_token,
-        )
+        with tracer.trace("litellm.proxy.auth.common_checks.tag_max_budget_check"):
+            await _tag_max_budget_check(
+                request_body=request_body,
+                prisma_client=prisma_client,
+                user_api_key_cache=user_api_key_cache,
+                proxy_logging_obj=proxy_logging_obj,
+                valid_token=valid_token,
+            )
 
         # 4. If user is in budget
         ## 4.1 check personal budget, if personal key
@@ -496,14 +563,15 @@ async def common_checks(  # noqa: PLR0915
                 )
 
         ## 4.2 check team member budget, if team key
-        await _check_team_member_budget(
-            team_object=team_object,
-            user_object=user_object,
-            valid_token=valid_token,
-            prisma_client=prisma_client,
-            user_api_key_cache=user_api_key_cache,
-            proxy_logging_obj=proxy_logging_obj,
-        )
+        with tracer.trace("litellm.proxy.auth.common_checks.check_team_member_budget"):
+            await _check_team_member_budget(
+                team_object=team_object,
+                user_object=user_object,
+                valid_token=valid_token,
+                prisma_client=prisma_client,
+                user_api_key_cache=user_api_key_cache,
+                proxy_logging_obj=proxy_logging_obj,
+            )
 
         # 5. If end_user ('user' passed to /chat/completions, /embeddings endpoint) is in budget
         if (
@@ -542,19 +610,21 @@ async def common_checks(  # noqa: PLR0915
     )
 
     # 11. [OPTIONAL] Vector store checks - is the object allowed to access the vector store
-    await vector_store_access_check(
-        request_body=request_body,
-        team_object=team_object,
-        valid_token=valid_token,
-    )
+    with tracer.trace("litellm.proxy.auth.common_checks.vector_store_access_check"):
+        await vector_store_access_check(
+            request_body=request_body,
+            team_object=team_object,
+            valid_token=valid_token,
+        )
 
     # 12. [OPTIONAL] Tool allowlist - key/team allowed_tools (no DB in hot path)
-    await check_tools_allowlist(
-        request_body=request_body,
-        valid_token=valid_token,
-        team_object=team_object,
-        route=route,
-    )
+    with tracer.trace("litellm.proxy.auth.common_checks.check_tools_allowlist"):
+        await check_tools_allowlist(
+            request_body=request_body,
+            valid_token=valid_token,
+            team_object=team_object,
+            route=route,
+        )
 
     return True
 
@@ -1962,8 +2032,9 @@ class ExperimentalUIJWTToken:
     def get_experimental_ui_login_jwt_auth_token(user_info: LiteLLM_UserTable) -> str:
         from datetime import timedelta
 
-        from litellm.proxy.common_utils.encrypt_decrypt_utils import \
-            encrypt_value_helper
+        from litellm.proxy.common_utils.encrypt_decrypt_utils import (
+            encrypt_value_helper,
+        )
 
         if user_info.user_role is None:
             raise Exception("User role is required for experimental UI login")
@@ -2009,8 +2080,9 @@ class ExperimentalUIJWTToken:
         """
         from datetime import timedelta
 
-        from litellm.proxy.common_utils.encrypt_decrypt_utils import \
-            encrypt_value_helper
+        from litellm.proxy.common_utils.encrypt_decrypt_utils import (
+            encrypt_value_helper,
+        )
 
         if user_info.user_role is None:
             raise Exception("User role is required for CLI JWT login")
@@ -2049,8 +2121,9 @@ class ExperimentalUIJWTToken:
         import json
 
         from litellm.proxy.auth.user_api_key_auth import UserAPIKeyAuth
-        from litellm.proxy.common_utils.encrypt_decrypt_utils import \
-            decrypt_value_helper
+        from litellm.proxy.common_utils.encrypt_decrypt_utils import (
+            decrypt_value_helper,
+        )
 
         decrypted_token = decrypt_value_helper(
             hashed_token, key="ui_hash_key", exception_type="debug"
@@ -2265,6 +2338,71 @@ async def get_object_permission(
 
 
 @log_db_metrics
+async def get_managed_vector_store_rows_by_uuids(
+    uuids: List[str],
+    prisma_client: Optional[PrismaClient],
+    user_api_key_cache: DualCache,
+    parent_otel_span: Optional[Span] = None,
+    proxy_logging_obj: Optional[ProxyLogging] = None,
+) -> List[LiteLLM_ManagedVectorStoresTable]:
+    """
+    Fetch managed vector store rows by their internal UUIDs.
+
+    Follows the get_team_object / get_key_object / get_object_permission pattern:
+    cache-first lookup (in-memory / Redis), DB fallback only on cache miss.
+    Critical-path DB access must go through this helper to avoid raw Prisma
+    calls on the hot request path.
+    """
+    if not uuids or prisma_client is None:
+        return []
+
+    result: List[LiteLLM_ManagedVectorStoresTable] = []
+    cache_misses: List[str] = []
+
+    for uuid in uuids:
+        key = "managed_vector_store_id:{}".format(uuid)
+        cached = await user_api_key_cache.async_get_cache(key=key)
+        if cached is not None:
+            if isinstance(cached, dict):
+                result.append(LiteLLM_ManagedVectorStoresTable(**cached))
+            elif isinstance(cached, LiteLLM_ManagedVectorStoresTable):
+                result.append(cached)
+            else:
+                cache_misses.append(uuid)
+        else:
+            cache_misses.append(uuid)
+
+    if not cache_misses:
+        return result
+
+    rows = await prisma_client.db.litellm_managedvectorstorestable.find_many(
+        where={"vector_store_id": {"in": cache_misses}},
+        take=len(cache_misses),
+    )
+
+    for row in rows:
+        row_dict = (
+            row.model_dump()
+            if hasattr(row, "model_dump")
+            else (row.dict() if hasattr(row, "dict") else None)
+        )
+        if not isinstance(row_dict, dict) or not row_dict:
+            row_dict = dict(row) if hasattr(row, "__dict__") else {}
+        if not row_dict:
+            continue
+        cached_obj = LiteLLM_ManagedVectorStoresTable(**row_dict)
+        key = "managed_vector_store_id:{}".format(cached_obj.vector_store_id)
+        await user_api_key_cache.async_set_cache(
+            key=key,
+            value=row_dict,
+            ttl=DEFAULT_MANAGEMENT_OBJECT_IN_MEMORY_CACHE_TTL,
+        )
+        result.append(cached_obj)
+
+    return result
+
+
+@log_db_metrics
 async def get_org_object(
     org_id: str,
     prisma_client: Optional[PrismaClient],
@@ -2366,10 +2504,8 @@ async def _get_resources_from_access_groups(
     # Lazy import to avoid circular imports
     if prisma_client is None or user_api_key_cache is None:
         from litellm.proxy.proxy_server import prisma_client as _prisma_client
-        from litellm.proxy.proxy_server import \
-            proxy_logging_obj as _proxy_logging_obj
-        from litellm.proxy.proxy_server import \
-            user_api_key_cache as _user_api_key_cache
+        from litellm.proxy.proxy_server import proxy_logging_obj as _proxy_logging_obj
+        from litellm.proxy.proxy_server import user_api_key_cache as _user_api_key_cache
 
         prisma_client = prisma_client or _prisma_client
         user_api_key_cache = user_api_key_cache or _user_api_key_cache
@@ -2782,7 +2918,15 @@ async def _virtual_key_max_budget_check(
         Triggers a budget alert if the token is over it's max budget.
 
     """
-    if valid_token.spend is not None and valid_token.max_budget is not None:
+    if valid_token.max_budget is not None:
+        from litellm.proxy.proxy_server import get_current_spend
+
+        # Read spend from cross-pod counter (Redis-first) or cached object (fallback)
+        spend = await get_current_spend(
+            counter_key=f"spend:key:{valid_token.token}",
+            fallback_spend=valid_token.spend or 0.0,
+        )
+
         ####################################
         # collect information for alerting #
         ####################################
@@ -2794,7 +2938,7 @@ async def _virtual_key_max_budget_check(
 
         call_info = CallInfo(
             token=valid_token.token,
-            spend=valid_token.spend,
+            spend=spend,
             max_budget=valid_token.max_budget,
             soft_budget=valid_token.soft_budget,
             user_id=valid_token.user_id,
@@ -2815,9 +2959,9 @@ async def _virtual_key_max_budget_check(
         # collect information for alerting #
         ####################################
 
-        if valid_token.spend >= valid_token.max_budget:
+        if spend >= valid_token.max_budget:
             raise litellm.BudgetExceededError(
-                current_cost=valid_token.spend,
+                current_cost=spend,
                 max_budget=valid_token.max_budget,
             )
 
@@ -2948,6 +3092,14 @@ async def _check_team_member_budget(
             team_member_budget = team_membership.litellm_budget_table.max_budget
             team_member_spend = team_membership.spend or 0.0
 
+            # Read from cross-pod counter (Redis-first) if available
+            from litellm.proxy.proxy_server import get_current_spend
+
+            team_member_spend = await get_current_spend(
+                counter_key=f"spend:team_member:{valid_token.user_id}:{team_object.team_id}",
+                fallback_spend=team_member_spend,
+            )
+
             if team_member_spend >= team_member_budget:
                 raise litellm.BudgetExceededError(
                     current_cost=team_member_spend,
@@ -2968,35 +3120,39 @@ async def _team_max_budget_check(
         BudgetExceededError if the team is over it's max budget.
         Triggers a budget alert if the team is over it's max budget.
     """
-    if (
-        team_object is not None
-        and team_object.max_budget is not None
-        and team_object.spend is not None
-        and team_object.spend > team_object.max_budget
-    ):
-        if valid_token:
-            call_info = CallInfo(
-                token=valid_token.token,
-                spend=team_object.spend,
-                max_budget=team_object.max_budget,
-                user_id=valid_token.user_id,
-                team_id=valid_token.team_id,
-                team_alias=valid_token.team_alias,
-                organization_id=valid_token.org_id,
-                event_group=Litellm_EntityType.TEAM,
-            )
-            asyncio.create_task(
-                proxy_logging_obj.budget_alerts(
-                    type="team_budget",
-                    user_info=call_info,
-                )
-            )
+    if team_object is not None and team_object.max_budget is not None:
+        from litellm.proxy.proxy_server import get_current_spend
 
-        raise litellm.BudgetExceededError(
-            current_cost=team_object.spend,
-            max_budget=team_object.max_budget,
-            message=f"Budget has been exceeded! Team={team_object.team_id} Current cost: {team_object.spend}, Max budget: {team_object.max_budget}",
+        # Read spend from cross-pod counter (Redis-first) or cached object (fallback)
+        spend = await get_current_spend(
+            counter_key=f"spend:team:{team_object.team_id}",
+            fallback_spend=team_object.spend or 0.0,
         )
+
+        if spend > team_object.max_budget:
+            if valid_token:
+                call_info = CallInfo(
+                    token=valid_token.token,
+                    spend=spend,
+                    max_budget=team_object.max_budget,
+                    user_id=valid_token.user_id,
+                    team_id=valid_token.team_id,
+                    team_alias=valid_token.team_alias,
+                    organization_id=valid_token.org_id,
+                    event_group=Litellm_EntityType.TEAM,
+                )
+                asyncio.create_task(
+                    proxy_logging_obj.budget_alerts(
+                        type="team_budget",
+                        user_info=call_info,
+                    )
+                )
+
+            raise litellm.BudgetExceededError(
+                current_cost=spend,
+                max_budget=team_object.max_budget,
+                message=f"Budget has been exceeded! Team={team_object.team_id} Current cost: {spend}, Max budget: {team_object.max_budget}",
+            )
 
 
 async def _team_soft_budget_check(
@@ -3325,8 +3481,7 @@ async def _tag_max_budget_check(
         BudgetExceededError if any tag is over its max budget.
         Triggers a budget alert if any tag is over its max budget.
     """
-    from litellm.proxy.common_utils.http_parsing_utils import \
-        get_tags_from_request_body
+    from litellm.proxy.common_utils.http_parsing_utils import get_tags_from_request_body
 
     if prisma_client is None:
         return

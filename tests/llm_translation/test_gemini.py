@@ -271,7 +271,7 @@ def test_gemini_context_caching_separate_messages():
 def test_gemini_image_generation():
     # litellm._turn_on_debug()
     response = completion(
-        model="gemini/gemini-2.0-flash-exp-image-generation",
+        model="gemini/gemini-2.5-flash-image",
         messages=[{"role": "user", "content": "Generate an image of a cat"}],
         modalities=["image", "text"],
     )
@@ -532,7 +532,7 @@ def test_gemini_with_grounding():
     ## Check streaming
 
     response = completion(
-        model="gemini/gemini-2.0-flash",
+        model="gemini/gemini-2.5-flash",
         messages=[{"role": "user", "content": "What is the capital of France?"}],
         tools=tools,
         stream=True,
@@ -566,7 +566,7 @@ def test_gemini_with_empty_function_call_arguments():
         }
     ]
     response = completion(
-        model="gemini/gemini-2.0-flash",
+        model="gemini/gemini-2.5-flash",
         messages=[{"role": "user", "content": "What is the capital of France?"}],
         tools=tools,
     )
@@ -775,7 +775,7 @@ def test_gemini_tool_use():
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "What's the weather like in Lima, Peru today?"},
         ],
-        "model": "gemini/gemini-2.0-flash",
+        "model": "gemini/gemini-2.5-flash",
         "tools": [
             {
                 "type": "function",
@@ -838,7 +838,7 @@ async def test_gemini_image_generation_async():
     IMAGE_URL = response.choices[0].message.images[0]["image_url"]
     print("IMAGE_URL: ", IMAGE_URL)
 
-    assert CONTENT is not None, "CONTENT is not None"
+    # content may be None when the model returns only an image with no text
     assert IMAGE_URL is not None, "IMAGE_URL is not None"
     assert IMAGE_URL["url"] is not None, "IMAGE_URL['url'] is not None"
     assert IMAGE_URL["url"].startswith("data:image/png;base64,")

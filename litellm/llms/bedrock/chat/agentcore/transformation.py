@@ -19,6 +19,7 @@ from litellm.litellm_core_utils.prompt_templates.common_utils import (
 from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
 from litellm.llms.base_llm.chat.transformation import BaseConfig, BaseLLMException
 from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM
+from litellm.llms.a2a.common_utils import extract_text_from_a2a_response
 from litellm.llms.bedrock.common_utils import BedrockError
 from litellm.types.llms.bedrock_agentcore import (
     AgentCoreMessage,
@@ -26,7 +27,15 @@ from litellm.types.llms.bedrock_agentcore import (
     AgentCoreUsage,
 )
 from litellm.types.llms.openai import AllMessageValues
-from litellm.types.utils import Choices, Delta, Message, ModelResponse, ModelResponseStream, StreamingChoices, Usage
+from litellm.types.utils import (
+    Choices,
+    Delta,
+    Message,
+    ModelResponse,
+    ModelResponseStream,
+    StreamingChoices,
+    Usage,
+)
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
@@ -335,6 +344,7 @@ class AmazonAgentCoreConfig(BaseConfig, BaseAWSLLM):
         Parse direct JSON response (non-streaming).
 
         Supports multiple agent response schemas:
+        0. {"jsonrpc": "2.0", "result": {"message": {"parts": [...]}}} - A2A JSON-RPC
         1. {"result": {"role": "assistant", "content": [{"text": "..."}]}} - standard AgentCore
         2. {"response": [{"text": "..."}]} - Strands agent format
         3. {"result": "plain text"} or {"response": "plain text"} - simple string
@@ -353,6 +363,18 @@ class AmazonAgentCoreConfig(BaseConfig, BaseAWSLLM):
                 final_message=None,
             )
 
+        # Strategy 0: A2A JSON-RPC format
+        # {"jsonrpc": "2.0", "result": {"message": {"parts": [{"kind": "text", "text": "..."}]}}}
+        if "jsonrpc" in response_json:
+            content = extract_text_from_a2a_response(response_json)
+            if content:
+                return AgentCoreParsedResponse(
+                    content=content,
+                    usage=None,
+                    final_message=None,
+                )
+            # Fall through to other strategies if A2A extraction returned empty
+
         # Strategy 1: {"result": {"content": [{"text": "..."}]}} - standard AgentCore format
         if "result" in response_json and isinstance(response_json["result"], dict):
             result = response_json["result"]
@@ -364,9 +386,7 @@ class AmazonAgentCoreConfig(BaseConfig, BaseAWSLLM):
             )
 
         # Strategy 2: {"response": [{"text": "..."}]} - Strands agent content blocks
-        if "response" in response_json and isinstance(
-            response_json["response"], list
-        ):
+        if "response" in response_json and isinstance(response_json["response"], list):
             content = self._extract_content_from_message(
                 {"content": response_json["response"]}  # type: ignore
             )
@@ -498,11 +518,11 @@ class AmazonAgentCoreConfig(BaseConfig, BaseAWSLLM):
             buffer += text_chunk
 
             # Process complete lines
-            while '\n' in buffer:
-                line, buffer = buffer.split('\n', 1)
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
                 line = line.strip()
 
-                if not line or not line.startswith('data:'):
+                if not line or not line.startswith("data:"):
                     continue
 
                 json_str = line[5:].strip()
@@ -556,11 +576,15 @@ class AmazonAgentCoreConfig(BaseConfig, BaseAWSLLM):
                                 )
                             ]
                             usage_data: AgentCoreUsage = metadata["usage"]  # type: ignore
-                            setattr(chunk, "usage", Usage(
-                                prompt_tokens=usage_data.get("inputTokens", 0),
-                                completion_tokens=usage_data.get("outputTokens", 0),
-                                total_tokens=usage_data.get("totalTokens", 0),
-                            ))
+                            setattr(
+                                chunk,
+                                "usage",
+                                Usage(
+                                    prompt_tokens=usage_data.get("inputTokens", 0),
+                                    completion_tokens=usage_data.get("outputTokens", 0),
+                                    total_tokens=usage_data.get("totalTokens", 0),
+                                ),
+                            )
                             yield chunk
 
                     # Process final message
@@ -710,11 +734,11 @@ class AmazonAgentCoreConfig(BaseConfig, BaseAWSLLM):
             buffer += text_chunk
 
             # Process complete lines
-            while '\n' in buffer:
-                line, buffer = buffer.split('\n', 1)
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
                 line = line.strip()
 
-                if not line or not line.startswith('data:'):
+                if not line or not line.startswith("data:"):
                     continue
 
                 json_str = line[5:].strip()
@@ -768,11 +792,15 @@ class AmazonAgentCoreConfig(BaseConfig, BaseAWSLLM):
                                 )
                             ]
                             usage_data: AgentCoreUsage = metadata["usage"]  # type: ignore
-                            setattr(chunk, "usage", Usage(
-                                prompt_tokens=usage_data.get("inputTokens", 0),
-                                completion_tokens=usage_data.get("outputTokens", 0),
-                                total_tokens=usage_data.get("totalTokens", 0),
-                            ))
+                            setattr(
+                                chunk,
+                                "usage",
+                                Usage(
+                                    prompt_tokens=usage_data.get("inputTokens", 0),
+                                    completion_tokens=usage_data.get("outputTokens", 0),
+                                    total_tokens=usage_data.get("totalTokens", 0),
+                                ),
+                            )
                             yield chunk
 
                     # Process final message
@@ -863,7 +891,9 @@ class AmazonAgentCoreConfig(BaseConfig, BaseAWSLLM):
                 )
             parsed = self._parse_json_response(response_json)
 
-            async def _json_as_async_stream() -> AsyncGenerator[ModelResponseStream, None]:
+            async def _json_as_async_stream() -> AsyncGenerator[
+                ModelResponseStream, None
+            ]:
                 # Content chunk
                 content_chunk = ModelResponseStream(
                     id=f"chatcmpl-{uuid.uuid4()}",

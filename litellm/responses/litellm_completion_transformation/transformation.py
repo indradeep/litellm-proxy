@@ -42,6 +42,7 @@ from litellm.types.llms.openai import (
 from litellm.types.responses.main import (
     GenericResponseOutputItem,
     GenericResponseOutputItemContentAnnotation,
+    OutputCodeInterpreterCall,
     OutputFunctionToolCall,
     OutputImageGenerationCall,
     OutputText,
@@ -304,8 +305,7 @@ class LiteLLMCompletionResponsesConfig:
         # Pass tools parameter to help reconstruct tool_calls if not in cache
         tools = litellm_completion_request.get("tools") or []
         combined_messages = LiteLLMCompletionResponsesConfig._ensure_tool_results_have_corresponding_tool_calls(
-            messages=combined_messages,
-            tools=tools
+            messages=combined_messages, tools=tools
         )
 
         # Safety check: Ensure we don't end up with empty messages
@@ -326,6 +326,7 @@ class LiteLLMCompletionResponsesConfig:
                 # Both are empty - this likely means function_call_output had empty/invalid call_id
                 # Provide a helpful error message
                 import litellm
+
                 raise litellm.BadRequestError(
                     message=(
                         f"Unable to create messages for completion request. "
@@ -336,7 +337,9 @@ class LiteLLMCompletionResponsesConfig:
                         f"Original request: previous_response_id={previous_response_id}"
                     ),
                     model=litellm_completion_request.get("model", ""),
-                    llm_provider=litellm_completion_request.get("custom_llm_provider", ""),
+                    llm_provider=litellm_completion_request.get(
+                        "custom_llm_provider", ""
+                    ),
                 )
 
         litellm_completion_request["messages"] = combined_messages
@@ -408,11 +411,14 @@ class LiteLLMCompletionResponsesConfig:
                                     else getattr(new_msg, "role", None)
                                 )
                                 if new_role == "assistant":
-                                    new_tcs = (
+                                    _raw_tcs = (
                                         new_msg.get("tool_calls")
                                         if isinstance(new_msg, dict)
                                         else getattr(new_msg, "tool_calls", None)
-                                    ) or []
+                                    )
+                                    new_tcs: list = (
+                                        _raw_tcs if isinstance(_raw_tcs, list) else []
+                                    )
                                     for tc in new_tcs:
                                         LiteLLMCompletionResponsesConfig._add_tool_call_to_assistant(
                                             last_msg, tc
@@ -576,7 +582,11 @@ class LiteLLMCompletionResponsesConfig:
             if isinstance(assistant_message, dict)
             else getattr(assistant_message, "tool_calls", None)
         )
-        if tool_calls_raw and isinstance(tool_calls_raw, list) and len(tool_calls_raw) > 0:
+        if (
+            tool_calls_raw
+            and isinstance(tool_calls_raw, list)
+            and len(tool_calls_raw) > 0
+        ):
             first_tool_call = tool_calls_raw[0]
             if isinstance(first_tool_call, dict):
                 tool_call_id_raw = first_tool_call.get("id", "")
@@ -668,8 +678,10 @@ class LiteLLMCompletionResponsesConfig:
         function_name_raw = LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
             function_raw, "name"
         )
-        function_arguments_raw = LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
-            function_raw, "arguments"
+        function_arguments_raw = (
+            LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+                function_raw, "arguments"
+            )
         )
         function: Dict[str, Any] = {
             "name": function_name_raw or "",
@@ -710,11 +722,15 @@ class LiteLLMCompletionResponsesConfig:
         if isinstance(tool_use_definition, dict):
             normalized_definition: Dict[str, Any] = dict(tool_use_definition)
         else:
-            tool_use_id_raw = LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
-                tool_use_definition, "id"
+            tool_use_id_raw = (
+                LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+                    tool_use_definition, "id"
+                )
             )
-            tool_use_type_raw = LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
-                tool_use_definition, "type"
+            tool_use_type_raw = (
+                LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+                    tool_use_definition, "type"
+                )
             )
             function_raw = LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
                 tool_use_definition, "function"
@@ -736,11 +752,15 @@ class LiteLLMCompletionResponsesConfig:
 
         function_raw = normalized_definition.get("function")
         if function_raw is not None and not isinstance(function_raw, dict):
-            function_name_raw = LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
-                function_raw, "name"
+            function_name_raw = (
+                LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+                    function_raw, "name"
+                )
             )
-            function_arguments_raw = LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
-                function_raw, "arguments"
+            function_arguments_raw = (
+                LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+                    function_raw, "arguments"
+                )
             )
             if function_name_raw is not None or function_arguments_raw is not None:
                 normalized_definition["function"] = {
@@ -749,9 +769,7 @@ class LiteLLMCompletionResponsesConfig:
                 }
 
         normalized_definition["id"] = normalized_definition.get("id") or tool_call_id
-        normalized_definition["type"] = (
-            normalized_definition.get("type") or "function"
-        )
+        normalized_definition["type"] = normalized_definition.get("type") or "function"
         return normalized_definition
 
     @staticmethod
@@ -811,6 +829,7 @@ class LiteLLMCompletionResponsesConfig:
 
         # Create a deep copy to avoid modifying the original (use list() so we can mutate and return List)
         import copy
+
         fixed_messages: List[
             Union[
                 AllMessageValues,
@@ -835,13 +854,19 @@ class LiteLLMCompletionResponsesConfig:
 
             # At this point, we know it's a tool message, so it should have tool_call_id
             # Use get() with default to safely access tool_call_id
-            tool_call_id_raw = message.get("tool_call_id") if isinstance(message, dict) else getattr(message, "tool_call_id", None)
+            tool_call_id_raw = (
+                message.get("tool_call_id")
+                if isinstance(message, dict)
+                else getattr(message, "tool_call_id", None)
+            )
             tool_call_id: str = (
                 str(tool_call_id_raw) if tool_call_id_raw is not None else ""
             )
 
-            prev_assistant_idx = LiteLLMCompletionResponsesConfig._find_previous_assistant_idx(
-                fixed_messages, i
+            prev_assistant_idx = (
+                LiteLLMCompletionResponsesConfig._find_previous_assistant_idx(
+                    fixed_messages, i
+                )
             )
 
             # Try to recover empty tool_call_id from previous assistant message
@@ -886,10 +911,8 @@ class LiteLLMCompletionResponsesConfig:
                     _tool_use_definition = TOOL_CALLS_CACHE.get_cache(key=tool_call_id)
 
                     if not _tool_use_definition and tools:
-                        _tool_use_definition = (
-                            LiteLLMCompletionResponsesConfig._reconstruct_tool_call_from_tools(
-                                tool_call_id, tools
-                            )
+                        _tool_use_definition = LiteLLMCompletionResponsesConfig._reconstruct_tool_call_from_tools(
+                            tool_call_id, tools
                         )
 
                     normalized_tool_use_definition = (
@@ -1049,7 +1072,10 @@ class LiteLLMCompletionResponsesConfig:
                                 )
                         elif isinstance(image_url_val, str) and image_url_val:
                             normalized_blocks.append(
-                                {"type": "image_url", "image_url": {"url": image_url_val}}
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": image_url_val},
+                                }
                             )
 
                 # Prefer structured blocks if we have images; otherwise return a string.
@@ -1113,7 +1139,9 @@ class LiteLLMCompletionResponsesConfig:
             function: dict = _tool_use_definition.get("function") or {}
             tool_call_chunk = ChatCompletionToolCallChunk(
                 id=_tool_use_definition.get("id") or "",
-                type=cast(Literal["function"], _tool_use_definition.get("type") or "function"),
+                type=cast(
+                    Literal["function"], _tool_use_definition.get("type") or "function"
+                ),
                 function=ChatCompletionToolCallFunctionChunk(
                     name=function.get("name") or "",
                     arguments=str(function.get("arguments") or ""),
@@ -1175,21 +1203,31 @@ class LiteLLMCompletionResponsesConfig:
         return [chat_completion_response_message]
 
     @staticmethod
+    def _resolve_file_id(item: Dict[str, Any]) -> Optional[str]:
+        """
+        Return the effective file_id for a Responses API input_file item.
+        Explicit file_id takes precedence; file_url is used as fallback so
+        downstream providers (Anthropic, Gemini) can handle the URL natively.
+        """
+        return item.get("file_id") or item.get("file_url") or None
+
+    @staticmethod
     def _transform_input_file_item_to_file_item(item: Dict[str, Any]) -> Dict[str, Any]:
         """
         Transform a Responses API input_file item to a Chat Completion file item
 
         Args:
-            item: Dictionary containing input_file type with file_id and/or file_data
+            item: Dictionary containing input_file type with file_id, file_data, and/or file_url
 
         Returns:
             Dictionary with transformed file structure for Chat Completion
         """
         file_dict: Dict[str, Any] = {}
-        keys = ["file_id", "file_data"]
-        for key in keys:
-            if item.get(key):
-                file_dict[key] = item.get(key)
+        file_id = LiteLLMCompletionResponsesConfig._resolve_file_id(item)
+        if file_id:
+            file_dict["file_id"] = file_id
+        if item.get("file_data"):
+            file_dict["file_data"] = item["file_data"]
 
         new_item: Dict[str, Any] = {"type": "file", "file": file_dict}
         return new_item
@@ -1349,7 +1387,7 @@ class LiteLLMCompletionResponsesConfig:
                         "description": typed_tool.get("description") or "",
                         "parameters": parameters,
                         "strict": typed_tool.get("strict", False) or False,
-                    }
+                    },
                 }
                 if tool.get("cache_control"):
                     chat_completion_tool["cache_control"] = tool.get("cache_control")  # type: ignore
@@ -1363,7 +1401,9 @@ class LiteLLMCompletionResponsesConfig:
                     cast(ChatCompletionToolParam, chat_completion_tool)
                 )
             else:
-                chat_completion_tools.append(cast(Union[ChatCompletionToolParam, OpenAIMcpServerTool], tool))
+                chat_completion_tools.append(
+                    cast(Union[ChatCompletionToolParam, OpenAIMcpServerTool], tool)
+                )
         return chat_completion_tools, web_search_options
 
     @staticmethod
@@ -1647,10 +1687,14 @@ class LiteLLMCompletionResponsesConfig:
             ),
             user=getattr(chat_completion_response, "user", None),
         )
-        responses_api_response._hidden_params = getattr(chat_completion_response, "_hidden_params", {})
+        responses_api_response._hidden_params = getattr(
+            chat_completion_response, "_hidden_params", {}
+        )
 
         # Surface provider-specific fields (generic passthrough from any provider)
-        provider_fields = responses_api_response._hidden_params.get("provider_specific_fields")
+        provider_fields = responses_api_response._hidden_params.get(
+            "provider_specific_fields"
+        )
         if provider_fields:
             setattr(responses_api_response, "provider_specific_fields", provider_fields)
 
@@ -1663,6 +1707,7 @@ class LiteLLMCompletionResponsesConfig:
     ) -> List[
         Union[
             GenericResponseOutputItem,
+            OutputCodeInterpreterCall,
             OutputFunctionToolCall,
             OutputImageGenerationCall,
             ResponseFunctionToolCall,
@@ -1671,6 +1716,7 @@ class LiteLLMCompletionResponsesConfig:
         responses_output: List[
             Union[
                 GenericResponseOutputItem,
+                OutputCodeInterpreterCall,
                 OutputFunctionToolCall,
                 OutputImageGenerationCall,
                 ResponseFunctionToolCall,
@@ -1692,7 +1738,62 @@ class LiteLLMCompletionResponsesConfig:
                 chat_completion_response=chat_completion_response
             )
         )
+
+        # Convert server-side tool results (e.g. Anthropic code execution)
+        # into code_interpreter_call output items, replacing the corresponding
+        # function_call items so the output matches OpenAI's native shape.
+        tool_result_items = (
+            LiteLLMCompletionResponsesConfig._extract_tool_result_output_items(
+                chat_completion_response
+            )
+        )
+        if tool_result_items:
+            result_by_id = {item.id: item for item in tool_result_items}
+            replaced_ids = set(result_by_id.keys())
+            responses_output = [
+                (
+                    result_by_id[getattr(item, "call_id", None)]
+                    if (
+                        getattr(item, "type", None) == "function_call"
+                        and getattr(item, "call_id", None) in replaced_ids
+                    )
+                    else item
+                )
+                for item in responses_output
+            ]
+
         return responses_output
+
+    @staticmethod
+    def _extract_tool_result_output_items(
+        chat_completion_response: ModelResponse,
+    ) -> list:
+        """Extract pre-built code_interpreter_call output items from provider_specific_fields.
+
+        Provider transformers (e.g. Anthropic) convert their native tool results
+        into OutputCodeInterpreterCall objects and store them in
+        provider_specific_fields["code_interpreter_results"]. This method
+        simply retrieves them — no provider-specific parsing here.
+        """
+        output_items: list = []
+        for choice in chat_completion_response.choices or []:
+            message = getattr(choice, "message", None)
+            if not message:
+                continue
+            psf = getattr(message, "provider_specific_fields", None)
+            if not psf or not isinstance(psf, dict):
+                continue
+            results = psf.get("code_interpreter_results")
+            if results and isinstance(results, list):
+                for item in results:
+                    # In the streaming path, items are plain dicts after
+                    # model_dump() in stream_chunk_builder.  Reconstruct
+                    # Pydantic objects so responses_output has a uniform type.
+                    if isinstance(item, dict):
+                        output_items.append(OutputCodeInterpreterCall(**item))
+                    else:
+                        output_items.append(item)
+        return output_items
 
     @staticmethod
     def _extract_reasoning_output_items(
@@ -2022,9 +2123,9 @@ class LiteLLMCompletionResponsesConfig:
                 hasattr(completion_details, "reasoning_tokens")
                 and completion_details.reasoning_tokens is not None
             ):
-                output_details_dict["reasoning_tokens"] = (
-                    completion_details.reasoning_tokens
-                )
+                output_details_dict[
+                    "reasoning_tokens"
+                ] = completion_details.reasoning_tokens
             else:
                 output_details_dict["reasoning_tokens"] = 0
 

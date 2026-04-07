@@ -4,7 +4,7 @@ from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import Request, status
+from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import litellm
@@ -15,6 +15,8 @@ from litellm.proxy.common_request_processing import (
     ProxyConfig,
     _extract_error_from_sse_chunk,
     _get_cost_breakdown_from_logging_obj,
+    _has_attribute_error_in_chain,
+    _is_azure_model_router_request,
     _override_openai_response_model,
     _parse_event_data_for_error,
     create_response,
@@ -897,6 +899,33 @@ class TestCommonRequestProcessingHelpers:
         assert content[0] == f"data: {json.dumps(expected_error_data)}\n\n"
         assert content[1] == "data: [DONE]\n\n"
 
+    async def test_create_streaming_response_generator_raises_http_exception(
+        self,
+    ):
+        """
+        Test that when a generator raises HTTPException, the response preserves
+        the original status code instead of hardcoding 500.
+        """
+        mock_gen = AsyncMock()
+        mock_gen.__anext__.side_effect = HTTPException(
+            status_code=400, detail="Content blocked by guardrail"
+        )
+
+        response = await create_response(mock_gen, "text/event-stream", {})
+        assert response.status_code == 400
+        content = await self.consume_stream(response)
+        import json
+
+        expected_error_data = {
+            "error": {
+                "message": "Content blocked by guardrail",
+                "code": 400,
+            }
+        }
+        assert len(content) == 2
+        assert content[0] == f"data: {json.dumps(expected_error_data)}\n\n"
+        assert content[1] == "data: [DONE]\n\n"
+
     async def test_create_streaming_response_first_chunk_error_string_code(self):
         """
         Test that when the first chunk contains a string error code, a JSON error response is returned
@@ -1368,6 +1397,161 @@ class TestOverrideOpenAIResponseModel:
         # Verify the model was not changed
         assert response_obj.model == fallback_model
 
+    def test_override_model_preserves_azure_model_router_actual_model(self):
+        """
+        Test that when the requested model is an Azure Model Router, the actual
+        model used (returned in the response) is preserved instead of being
+        overridden.
+        """
+        requested_model = "azure_ai/model_router"
+        actual_model_used = "azure_ai/gpt-5-nano-2025-08-07"
+
+        response_obj = MagicMock()
+        response_obj.model = actual_model_used
+        response_obj._hidden_params = {"additional_headers": {}}
+
+        _override_openai_response_model(
+            response_obj=response_obj,
+            requested_model=requested_model,
+            log_context="test_context",
+        )
+        assert response_obj.model == actual_model_used
+        assert response_obj.model != requested_model
+
+    def test_override_model_preserves_azure_model_router_with_deployment_name(self):
+        """
+        Test that Azure Model Router with deployment name pattern also preserves
+        the actual model used.
+        """
+        requested_model = "azure_ai/model_router/my-deployment"
+        actual_model_used = "azure_ai/gpt-4.1-nano-2025-04-14"
+
+        response_obj = MagicMock()
+        response_obj.model = actual_model_used
+        response_obj._hidden_params = {"additional_headers": {}}
+
+        _override_openai_response_model(
+            response_obj=response_obj,
+            requested_model=requested_model,
+            log_context="test_context",
+        )
+        assert response_obj.model == actual_model_used
+        assert response_obj.model != requested_model
+
+    def test_override_model_preserves_azure_model_router_with_hyphen(self):
+        """
+        Test that Azure Model Router with hyphen pattern (model-router) also preserves
+        the actual model used.
+        """
+        requested_model = "azure_ai/model-router"
+        actual_model_used = "azure_ai/gpt-5-nano-2025-08-07"
+
+        response_obj = MagicMock()
+        response_obj.model = actual_model_used
+        response_obj._hidden_params = {"additional_headers": {}}
+
+        _override_openai_response_model(
+            response_obj=response_obj,
+            requested_model=requested_model,
+            log_context="test_context",
+        )
+        assert response_obj.model == actual_model_used
+        assert response_obj.model != requested_model
+
+    def test_override_model_uses_winning_model_for_fastest_response(self):
+        """
+        Test that when fastest_response batch completion is used with a
+        comma-separated model list, the response model is set to the winning
+        model's group name (not the comma-separated list).
+        """
+        requested_model = "openai/gpt-4o,gemini/gemini-2.5-flash"
+        winning_model_group = "gemini/gemini-2.5-flash"
+        downstream_model = "gemini-2.5-flash"
+
+        response_obj = MagicMock()
+        response_obj.model = downstream_model
+        response_obj._hidden_params = {
+            "fastest_response_batch_completion": True,
+            "additional_headers": {
+                "x-litellm-model-group": winning_model_group,
+            },
+        }
+
+        _override_openai_response_model(
+            response_obj=response_obj,
+            requested_model=requested_model,
+            log_context="test_context",
+        )
+
+        assert response_obj.model == winning_model_group
+        assert response_obj.model != requested_model
+
+    def test_override_model_preserves_response_when_fastest_response_no_model_group(
+        self,
+    ):
+        """
+        Test that when fastest_response is set but no model group header is
+        available, the actual downstream model is preserved.
+        """
+        requested_model = "openai/gpt-4o,gemini/gemini-2.5-flash"
+        downstream_model = "gpt-4o-2024-08-06"
+
+        response_obj = MagicMock()
+        response_obj.model = downstream_model
+        response_obj._hidden_params = {
+            "fastest_response_batch_completion": True,
+            "additional_headers": {},
+        }
+
+        _override_openai_response_model(
+            response_obj=response_obj,
+            requested_model=requested_model,
+            log_context="test_context",
+        )
+
+        assert response_obj.model == downstream_model
+
+    def test_override_model_normal_when_fastest_response_not_set(self):
+        """
+        Test that when fastest_response_batch_completion is not set, the
+        normal override behavior applies (model is set to requested_model).
+        """
+        requested_model = "openai/gpt-4o"
+        downstream_model = "gpt-4o-2024-08-06"
+
+        response_obj = MagicMock()
+        response_obj.model = downstream_model
+        response_obj._hidden_params = {
+            "additional_headers": {
+                "x-litellm-model-group": "openai/gpt-4o",
+            },
+        }
+
+        _override_openai_response_model(
+            response_obj=response_obj,
+            requested_model=requested_model,
+            log_context="test_context",
+        )
+
+        assert response_obj.model == requested_model
+
+
+class TestIsAzureModelRouterRequest:
+    """Tests for _is_azure_model_router_request helper"""
+
+    def test_detects_model_router_with_underscore(self):
+        assert _is_azure_model_router_request("azure_ai/model_router") is True
+        assert _is_azure_model_router_request("azure_ai/model_router/my-deployment") is True
+
+    def test_detects_model_router_with_hyphen(self):
+        assert _is_azure_model_router_request("azure_ai/model-router") is True
+        assert _is_azure_model_router_request("model-router") is True
+
+    def test_rejects_regular_models(self):
+        assert _is_azure_model_router_request("azure_ai/gpt-4") is False
+        assert _is_azure_model_router_request("gpt-4") is False
+        assert _is_azure_model_router_request("openai/gpt-3.5-turbo") is False
+
 
 class TestStreamingOverheadHeader:
     """
@@ -1622,3 +1806,50 @@ class TestDDSpanTaggerTagRequest:
             )
 
         mock_set_tag.assert_called_once_with("litellm.requested_model", "claude-3-5-sonnet")
+
+
+class TestHasAttributeErrorInChain:
+    """Tests for _has_attribute_error_in_chain helper."""
+
+    def test_direct_attribute_error(self):
+        exc = AttributeError("'str' object has no attribute 'get'")
+        assert _has_attribute_error_in_chain(exc) is True
+
+    def test_no_attribute_error(self):
+        exc = ValueError("some other error")
+        assert _has_attribute_error_in_chain(exc) is False
+
+    def test_attribute_error_in_cause(self):
+        inner = AttributeError("bad attribute")
+        outer = RuntimeError("wrapper")
+        outer.__cause__ = inner
+        assert _has_attribute_error_in_chain(outer) is True
+
+    def test_attribute_error_in_context(self):
+        inner = AttributeError("bad attribute")
+        outer = RuntimeError("wrapper")
+        outer.__context__ = inner
+        assert _has_attribute_error_in_chain(outer) is True
+
+    def test_attribute_error_in_original_exception(self):
+        inner = AttributeError("bad attribute")
+        outer = RuntimeError("wrapper")
+        outer.original_exception = inner  # type: ignore
+        assert _has_attribute_error_in_chain(outer) is True
+
+    def test_attribute_error_nested_two_levels(self):
+        """Simulates the real failure: AttributeError -> OpenAIException -> APIConnectionError."""
+        attr_err = AttributeError("'str' object has no attribute 'get'")
+        mid = Exception("OpenAIException wrapper")
+        mid.__context__ = attr_err
+        outer = Exception("APIConnectionError wrapper")
+        outer.__context__ = mid
+        assert _has_attribute_error_in_chain(outer) is True
+
+    def test_depth_limit_prevents_infinite_loop(self):
+        """Ensure circular references don't cause infinite recursion."""
+        exc_a = RuntimeError("a")
+        exc_b = RuntimeError("b")
+        exc_a.__context__ = exc_b
+        exc_b.__context__ = exc_a  # circular
+        assert _has_attribute_error_in_chain(exc_a) is False

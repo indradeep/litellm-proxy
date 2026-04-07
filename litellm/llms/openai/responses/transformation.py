@@ -50,6 +50,9 @@ class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
     def custom_llm_provider(self) -> LlmProviders:
         return LlmProviders.OPENAI
 
+    def supports_native_file_search(self) -> bool:
+        return True
+
     def get_supported_openai_params(self, model: str) -> list:
         """
         All OpenAI Responses API params are supported
@@ -206,7 +209,7 @@ class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
                 f"Error constructing ResponsesAPIResponse: {raw_response_json}, using model_construct"
             )
             response = ResponsesAPIResponse.model_construct(**raw_response_json)
-        
+
         # Store processed headers in additional_headers so they get returned to the client
         response._hidden_params["additional_headers"] = processed_headers
         response._hidden_params["headers"] = raw_response_headers
@@ -437,7 +440,7 @@ class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
     ) -> ResponsesAPIResponse:
         """
         Transform the get response API response into a ResponsesAPIResponse
-        """        
+        """
         try:
             raw_response_json = raw_response.json()
         except Exception:
@@ -449,7 +452,7 @@ class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
         response = ResponsesAPIResponse(**raw_response_json)
         response._hidden_params["additional_headers"] = processed_headers
         response._hidden_params["headers"] = raw_response_headers
-        
+
         return response
 
     #########################################################
@@ -529,11 +532,11 @@ class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
             )
         raw_response_headers = dict(raw_response.headers)
         processed_headers = process_response_headers(raw_response_headers)
-        
+
         response = ResponsesAPIResponse(**raw_response_json)
         response._hidden_params["additional_headers"] = processed_headers
         response._hidden_params["headers"] = raw_response_headers
-        
+
         return response
 
     #########################################################
@@ -558,14 +561,14 @@ class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
         parsed_url = httpx.URL(api_base)
         compact_path = parsed_url.path.rstrip("/") + "/compact"
         url = str(parsed_url.copy_with(path=compact_path))
-        
+
         input = self._validate_input_param(input)
         data = dict(
             ResponsesAPIRequestParams(
                 model=model, input=input, **response_api_optional_request_params
             )
         )
-        
+
         return url, data
 
     def transform_compact_response_api_response(
@@ -591,7 +594,7 @@ class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
             )
         raw_response_headers = dict(raw_response.headers)
         processed_headers = process_response_headers(raw_response_headers)
-        
+
         try:
             response = ResponsesAPIResponse(**raw_response_json)
         except Exception:
@@ -599,8 +602,8 @@ class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
                 f"Error constructing ResponsesAPIResponse: {raw_response_json}, using model_construct"
             )
             response = ResponsesAPIResponse.model_construct(**raw_response_json)
-        
+
         response._hidden_params["additional_headers"] = processed_headers
         response._hidden_params["headers"] = raw_response_headers
-        
+
         return response

@@ -771,7 +771,7 @@ async def _perform_health_check_and_save(
     max_concurrency=None,
 ):
     """Helper function to perform health check and save results to database"""
-    healthy_endpoints, unhealthy_endpoints = await perform_health_check(
+    healthy_endpoints, unhealthy_endpoints, _ = await perform_health_check(
         model_list=model_list,
         cli_model=cli_model,
         model=target_model,
@@ -1143,7 +1143,9 @@ async def _db_health_readiness_check():
 
     try:
         time_diff = datetime.now() - db_health_cache["last_updated"]
-        if db_health_cache["status"] == "connected" and time_diff < timedelta(seconds=15):
+        if db_health_cache["status"] == "connected" and time_diff < timedelta(
+            seconds=15
+        ):
             return db_health_cache
 
         if prisma_client is None:
@@ -1167,7 +1169,10 @@ async def _db_health_readiness_check():
                 verbose_proxy_logger.info(
                     "_db_health_readiness_check: reconnect succeeded"
                 )
-                db_health_cache = {"status": "connected", "last_updated": datetime.now()}
+                db_health_cache = {
+                    "status": "connected",
+                    "last_updated": datetime.now(),
+                }
                 return db_health_cache
             except Exception:
                 verbose_proxy_logger.error(

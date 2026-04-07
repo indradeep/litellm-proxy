@@ -1,12 +1,11 @@
 import asyncio
 from datetime import datetime, timedelta
-from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 from mcp import ReadResourceResult, Resource
-from mcp.types import Prompt, ResourceTemplate, TextResourceContents
+from mcp.types import BlobResourceContents, Prompt, ResourceTemplate, TextResourceContents
 
 from litellm.proxy._types import (
     LiteLLM_MCPServerTable,
@@ -413,6 +412,111 @@ async def test_mcp_read_resource_success():
     assert result is read_result
 
 
+def test_normalize_resource_contents_passes_metadata():
+    """Test that _normalize_resource_contents preserves meta from ResourceContents (MCP 1.26.0+)."""
+    try:
+        from litellm.proxy._experimental.mcp_server.server import (
+            _normalize_resource_contents,
+        )
+    except ImportError:
+        pytest.skip("MCP server not available")
+
+    meta = {"version": "1.0", "source": "test"}
+    contents = [
+        TextResourceContents(
+            uri="https://example.com/resource",
+            text="hello world",
+            mimeType="text/plain",
+            meta=meta,
+        )
+    ]
+
+    result = _normalize_resource_contents(contents)
+
+    assert len(result) == 1
+    assert result[0].content == "hello world"
+    assert result[0].mime_type == "text/plain"
+    assert result[0].meta == meta
+
+
+def test_normalize_resource_contents_blob_with_metadata():
+    """Test that _normalize_resource_contents preserves meta for BlobResourceContents."""
+    try:
+        from litellm.proxy._experimental.mcp_server.server import (
+            _normalize_resource_contents,
+        )
+    except ImportError:
+        pytest.skip("MCP server not available")
+
+    meta = {"encoding": "base64"}
+    contents = [
+        BlobResourceContents(
+            uri="https://example.com/image.png",
+            blob="aGVsbG8=",
+            mimeType="image/png",
+            meta=meta,
+        )
+    ]
+
+    result = _normalize_resource_contents(contents)
+
+    assert len(result) == 1
+    assert result[0].content == "aGVsbG8="
+    assert result[0].mime_type == "image/png"
+    assert result[0].meta == meta
+
+
+def test_normalize_resource_contents_preserves_empty_metadata():
+    """Test that empty dict meta is preserved (truthiness bug fix)."""
+    try:
+        from litellm.proxy._experimental.mcp_server.server import (
+            _normalize_resource_contents,
+        )
+    except ImportError:
+        pytest.skip("MCP server not available")
+
+    empty_meta: dict = {}
+    contents = [
+        TextResourceContents(
+            uri="https://example.com/resource",
+            text="hi",
+            mimeType="text/plain",
+            meta=empty_meta,
+        )
+    ]
+
+    result = _normalize_resource_contents(contents)
+
+    assert len(result) == 1
+    assert result[0].meta == empty_meta
+    assert result[0].meta is not None
+    assert result[0].meta == {}
+
+
+def test_normalize_resource_contents_without_metadata():
+    """Test that _normalize_resource_contents works when meta is absent (backward compat)."""
+    try:
+        from litellm.proxy._experimental.mcp_server.server import (
+            _normalize_resource_contents,
+        )
+    except ImportError:
+        pytest.skip("MCP server not available")
+
+    contents = [
+        TextResourceContents(
+            uri="https://example.com/resource",
+            text="hello",
+            mimeType="text/plain",
+        )
+    ]
+
+    result = _normalize_resource_contents(contents)
+
+    assert len(result) == 1
+    assert result[0].content == "hello"
+    assert result[0].meta is None
+
+
 @pytest.mark.asyncio
 async def test_mcp_read_resource_multiple_servers_error():
     try:
@@ -707,8 +811,6 @@ async def test_concurrent_initialize_session_managers():
     """Test that concurrent calls to initialize_session_managers don't cause race conditions."""
     try:
         from litellm.proxy._experimental.mcp_server.server import (
-            _INITIALIZATION_LOCK,
-            _SESSION_MANAGERS_INITIALIZED,
             initialize_session_managers,
         )
     except ImportError:
@@ -1426,7 +1528,6 @@ async def test_list_tools_with_team_tool_permissions_inheritance():
         )
         from litellm.proxy._types import (
             LiteLLM_ObjectPermissionTable,
-            LiteLLM_TeamTable,
             UserAPIKeyAuth,
         )
     except ImportError:
@@ -1897,18 +1998,18 @@ class TestMCPServerManagerReload:
 
         db_row = _make_db_mcp_server("server-1", timestamp)
 
+        mock_prisma = MagicMock()
+        mock_prisma.db.litellm_mcpservertable.find_many = AsyncMock(
+            return_value=[db_row]
+        )
         with patch(
-            "litellm.proxy._experimental.mcp_server.db.get_all_mcp_servers",
-            new=AsyncMock(return_value=[db_row]),
-        ) as mock_get_all, patch(
             "litellm.proxy.management_endpoints.mcp_management_endpoints.get_prisma_client_or_throw",
-            return_value=object(),
+            return_value=mock_prisma,
         ), patch.object(
             manager, "build_mcp_server_from_table", AsyncMock()
         ) as mock_build:
             await manager.reload_servers_from_database()
 
-        mock_get_all.assert_awaited_once()
         mock_build.assert_not_awaited()
         assert manager.registry["server-1"] is existing_server
 
@@ -1940,12 +2041,13 @@ class TestMCPServerManagerReload:
             updated_at=new_timestamp,
         )
 
+        mock_prisma = MagicMock()
+        mock_prisma.db.litellm_mcpservertable.find_many = AsyncMock(
+            return_value=[db_row]
+        )
         with patch(
-            "litellm.proxy._experimental.mcp_server.db.get_all_mcp_servers",
-            new=AsyncMock(return_value=[db_row]),
-        ) as mock_get_all, patch(
             "litellm.proxy.management_endpoints.mcp_management_endpoints.get_prisma_client_or_throw",
-            return_value=object(),
+            return_value=mock_prisma,
         ), patch.object(
             manager,
             "build_mcp_server_from_table",
@@ -1953,7 +2055,6 @@ class TestMCPServerManagerReload:
         ) as mock_build:
             await manager.reload_servers_from_database()
 
-        mock_get_all.assert_awaited_once()
         mock_build.assert_awaited_once_with(db_row)
         assert manager.registry["server-1"] is rebuilt_server
 
@@ -2097,12 +2198,12 @@ async def test_get_tools_from_mcp_servers_logs_list_tools_to_spendlogs_when_enab
 
 def test_tool_name_matches_case_insensitive():
     """Test that _tool_name_matches performs case-insensitive comparison.
-    
+
     This is critical for OpenAPI-based MCP servers where:
     1. operationIds are often in camelCase (e.g., 'addPet', 'updatePet')
     2. Tool names are lowercased during registration (e.g., 'addpet', 'updatepet')
     3. allowed_tools configuration may use the original camelCase names
-    
+
     Without case-insensitive matching, all tools would be filtered out.
     """
     try:
@@ -2136,7 +2237,7 @@ def test_tool_name_matches_case_insensitive():
 
 def test_filter_tools_by_allowed_tools_case_insensitive():
     """Test that filter_tools_by_allowed_tools handles case-insensitive matching.
-    
+
     Ensures that OpenAPI tools with lowercase names can be filtered using
     camelCase allowed_tools configuration from the OpenAPI spec.
     """
@@ -2240,3 +2341,83 @@ def test_filter_tools_by_allowed_tools_no_filter():
 
     # Should return all tools when no filter is configured
     assert len(filtered_tools) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_tools_from_mcp_servers_injects_stored_oauth2_token():
+    """
+    When _get_tools_from_mcp_servers is called for an OAuth2 MCP server and no
+    oauth2_headers are provided in the request (e.g. a /responses API call from a
+    chat UI), the per-user stored token must be fetched from the DB and passed as
+    extra_headers to _get_tools_from_server.
+
+    The implementation pre-fetches all user credentials in a single bulk query
+    (_prefetch_oauth_creds_for_user) to avoid N+1 queries in the gather loop.
+
+    This covers the bug where OAuth2 MCP tools were always empty in the /responses
+    API because the stored credential was never injected.
+    """
+    try:
+        from litellm.proxy._experimental.mcp_server.server import (
+            _get_tools_from_mcp_servers,
+        )
+        from litellm.proxy._types import UserAPIKeyAuth
+        from litellm.types.mcp import MCPAuth
+    except ImportError:
+        pytest.skip("MCP server not available")
+
+    STORED_TOKEN = "atlassian-oauth-access-token-xyz"
+    SERVER_ID = "srv-oauth2-id"
+    USER_ID = "user-123"
+
+    user_auth = UserAPIKeyAuth(api_key="test-key", user_id=USER_ID)
+
+    oauth2_server = MagicMock(name="atlassian_server")
+    oauth2_server.name = "atlassian_test"
+    oauth2_server.alias = "atlassian_test"
+    oauth2_server.server_name = "atlassian_test"
+    oauth2_server.server_id = SERVER_ID
+    oauth2_server.auth_type = MCPAuth.oauth2
+    oauth2_server.extra_headers = None
+
+    # Simulate the DB returning a valid credential for this user+server
+    prefetched_creds = {SERVER_ID: {"access_token": STORED_TOKEN, "server_id": SERVER_ID}}
+
+    tool_1 = MagicMock()
+    tool_1.name = "atlassian_test-search"
+
+    with patch(
+        "litellm.proxy._experimental.mcp_server.server._get_allowed_mcp_servers",
+        new=AsyncMock(return_value=[oauth2_server]),
+    ), patch(
+        # Patch the bulk prefetch so no real DB connection is needed
+        "litellm.proxy._experimental.mcp_server.server._prefetch_oauth_creds_for_user",
+        new=AsyncMock(return_value=prefetched_creds),
+    ) as mock_prefetch, patch(
+        "litellm.proxy._experimental.mcp_server.server.global_mcp_server_manager",
+    ) as mock_manager, patch(
+        "litellm.proxy._experimental.mcp_server.server.filter_tools_by_allowed_tools",
+        side_effect=lambda tools, _server: tools,
+    ), patch(
+        "litellm.proxy._experimental.mcp_server.server.filter_tools_by_key_team_permissions",
+        new=AsyncMock(side_effect=lambda tools, **_: tools),
+    ):
+        mock_manager._get_tools_from_server = AsyncMock(return_value=[tool_1])
+
+        tools = await _get_tools_from_mcp_servers(
+            user_api_key_auth=user_auth,
+            mcp_auth_header=None,
+            mcp_servers=["atlassian_test"],
+            mcp_server_auth_headers=None,
+            oauth2_headers=None,  # No token from request — must fall back to DB
+        )
+
+    # Bulk credential prefetch was called once (not once per server)
+    mock_prefetch.assert_awaited_once_with(user_auth)
+
+    # The stored token was forwarded to the MCP transport layer as extra_headers
+    mock_manager._get_tools_from_server.assert_awaited_once()
+    call_kwargs = mock_manager._get_tools_from_server.await_args.kwargs
+    assert call_kwargs["extra_headers"] == {"Authorization": f"Bearer {STORED_TOKEN}"}
+
+    assert tools == [tool_1]

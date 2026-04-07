@@ -319,18 +319,20 @@ class DualCache(BaseCache):
                             previous_access_times
                         )
                         raise
-                    
+
                     # Short-circuit if redis_result is None or contains only None values
-                    if redis_result is None or all(v is None for v in redis_result.values()):
+                    if redis_result is None or all(
+                        v is None for v in redis_result.values()
+                    ):
                         return result
 
                     # Pre-compute key-to-index mapping for O(1) lookup
                     key_to_index = {key: i for i, key in enumerate(keys)}
-                    
+
                     # Update both result and in-memory cache in a single loop
                     for key, value in redis_result.items():
                         result[key_to_index[key]] = value
-                        
+
                         if value is not None and self.in_memory_cache is not None:
                             await self.in_memory_cache.async_set_cache(
                                 key, value, **kwargs
@@ -391,16 +393,17 @@ class DualCache(BaseCache):
         parent_otel_span: Optional[Span] = None,
         local_only: bool = False,
         **kwargs,
-    ) -> float:
+    ) -> Optional[float]:
         """
         Key - the key in cache
 
         Value - float - the value you want to increment by
 
-        Returns - float - the incremented value
+        Returns - the incremented value, or None if no cache backend is
+        available (in_memory_cache is None and Redis failed/is absent).
         """
+        result: Optional[float] = None
         try:
-            result: float = value
             if self.in_memory_cache is not None:
                 result = await self.in_memory_cache.async_increment(
                     key, value, **kwargs
@@ -416,7 +419,11 @@ class DualCache(BaseCache):
 
             return result
         except Exception as e:
-            raise e  # don't log if exception is raised
+            verbose_logger.warning(
+                "Redis async_increment_cache failed, falling back to in-memory result: %s",
+                e,
+            )
+            return result
 
     async def async_increment_cache_pipeline(
         self,
@@ -425,8 +432,8 @@ class DualCache(BaseCache):
         parent_otel_span: Optional[Span] = None,
         **kwargs,
     ) -> Optional[List[float]]:
+        result: Optional[List[float]] = None
         try:
-            result: Optional[List[float]] = None
             if self.in_memory_cache is not None:
                 result = await self.in_memory_cache.async_increment_pipeline(
                     increment_list=increment_list,
@@ -441,7 +448,11 @@ class DualCache(BaseCache):
 
             return result
         except Exception as e:
-            raise e  # don't log if exception is raised
+            verbose_logger.warning(
+                "Redis async_increment_cache_pipeline failed, falling back to in-memory result: %s",
+                e,
+            )
+            return result
 
     async def async_set_cache_sadd(
         self, key, value: List, local_only: bool = False, **kwargs
