@@ -146,6 +146,49 @@ class TestOutputConfigStructuredOutput:
         kwargs = _ADAPTER.translate_request(req)
         assert "text" not in kwargs
 
+    def test_output_config_effort_sets_reasoning(self):
+        req = _make_request(output_config={"effort": "high"})
+        kwargs = _ADAPTER.translate_request(req)
+        assert kwargs["reasoning"] == {"effort": "high"}
+
+    def test_output_config_effort_wins_over_thinking(self):
+        req = _make_request(
+            output_config={"effort": "medium"},
+            thinking={"type": "enabled", "budget_tokens": 4096},
+        )
+        kwargs = _ADAPTER.translate_request(req)
+        assert kwargs["reasoning"] == {"effort": "medium"}
+
+    def test_output_config_max_maps_to_xhigh_for_gpt_5_4(self):
+        req = _make_request(model="gpt-5.4", output_config={"effort": "max"})
+        kwargs = _ADAPTER.translate_request(req)
+        assert kwargs["reasoning"] == {"effort": "xhigh"}
+
+    def test_output_config_max_maps_to_xhigh_for_gpt_5_2(self):
+        req = _make_request(model="openai/gpt-5.2", output_config={"effort": "max"})
+        kwargs = _ADAPTER.translate_request(req)
+        assert kwargs["reasoning"] == {"effort": "xhigh"}
+
+    def test_output_config_xhigh_maps_to_xhigh_for_gpt_5_4(self):
+        req = _make_request(model="gpt-5.4", output_config={"effort": "xhigh"})
+        kwargs = _ADAPTER.translate_request(req)
+        assert kwargs["reasoning"] == {"effort": "xhigh"}
+
+    def test_output_config_xhigh_maps_to_xhigh_for_gpt_5_2(self):
+        req = _make_request(model="openai/gpt-5.2", output_config={"effort": "xhigh"})
+        kwargs = _ADAPTER.translate_request(req)
+        assert kwargs["reasoning"] == {"effort": "xhigh"}
+
+    def test_output_config_xhigh_downgrades_to_high_for_gpt_5_1(self):
+        req = _make_request(model="openai/gpt-5.1", output_config={"effort": "xhigh"})
+        kwargs = _ADAPTER.translate_request(req)
+        assert kwargs["reasoning"] == {"effort": "high"}
+
+    def test_output_config_max_downgrades_to_high_for_gpt_5_1(self):
+        req = _make_request(model="openai/gpt-5.1", output_config={"effort": "max"})
+        kwargs = _ADAPTER.translate_request(req)
+        assert kwargs["reasoning"] == {"effort": "high"}
+
     def test_output_format_still_works(self):
         """The original output_format field still takes precedence when present."""
         req = _make_request(
@@ -612,7 +655,7 @@ class TestTranslateThinkingToReasoning:
 
     def test_budget_high_effort(self):
         result = _ADAPTER.translate_thinking_to_reasoning(
-            {"type": "enabled", "budget_tokens": 10000}
+            {"type": "enabled", "budget_tokens": 4096}
         )
         # Default (reasoning_auto_summary=False): only effort, no summary
         assert result == {"effort": "high"}
@@ -628,38 +671,44 @@ class TestTranslateThinkingToReasoning:
 
     def test_budget_medium_effort(self):
         result = _ADAPTER.translate_thinking_to_reasoning(
-            {"type": "enabled", "budget_tokens": 7500}
+            {"type": "enabled", "budget_tokens": 2048}
         )
         assert result == {"effort": "medium"}
         assert result is not None and "summary" not in result
 
     def test_budget_low_effort(self):
         result = _ADAPTER.translate_thinking_to_reasoning(
-            {"type": "enabled", "budget_tokens": 3000}
+            {"type": "enabled", "budget_tokens": 1024}
         )
         assert result == {"effort": "low"}
         assert result is not None and "summary" not in result
 
     def test_budget_minimal_effort(self):
         result = _ADAPTER.translate_thinking_to_reasoning(
-            {"type": "enabled", "budget_tokens": 500}
+            {"type": "enabled", "budget_tokens": 128}
         )
         assert result == {"effort": "minimal"}
         assert result is not None and "summary" not in result
 
     def test_budget_at_exact_thresholds(self):
-        result_medium = _ADAPTER.translate_thinking_to_reasoning(
-            {"type": "enabled", "budget_tokens": 5000}
-        )
-        assert result_medium is not None
-        assert result_medium["effort"] == "medium"
-        assert "summary" not in result_medium
         result_low = _ADAPTER.translate_thinking_to_reasoning(
-            {"type": "enabled", "budget_tokens": 2000}
+            {"type": "enabled", "budget_tokens": 1024}
         )
         assert result_low is not None
         assert result_low["effort"] == "low"
         assert "summary" not in result_low
+        result_medium = _ADAPTER.translate_thinking_to_reasoning(
+            {"type": "enabled", "budget_tokens": 2048}
+        )
+        assert result_medium is not None
+        assert result_medium["effort"] == "medium"
+        assert "summary" not in result_medium
+        result_high = _ADAPTER.translate_thinking_to_reasoning(
+            {"type": "enabled", "budget_tokens": 4096}
+        )
+        assert result_high is not None
+        assert result_high["effort"] == "high"
+        assert "summary" not in result_high
 
     def test_disabled_type_returns_none(self):
         result = _ADAPTER.translate_thinking_to_reasoning({"type": "disabled"})
@@ -670,7 +719,7 @@ class TestTranslateThinkingToReasoning:
         assert result is None
 
     def test_missing_budget_defaults_to_minimal(self):
-        """Missing budget_tokens defaults to 0, which is < 2000 -> minimal."""
+        """Missing budget_tokens defaults to 0, which maps to minimal."""
         result = _ADAPTER.translate_thinking_to_reasoning({"type": "enabled"})
         assert result == {"effort": "minimal"}
         assert result is not None and "summary" not in result
@@ -683,7 +732,7 @@ class TestTranslateThinkingToReasoning:
         try:
             litellm.reasoning_auto_summary = True
             result = _ADAPTER.translate_thinking_to_reasoning(
-                {"type": "enabled", "budget_tokens": 10000}
+                {"type": "enabled", "budget_tokens": 4096}
             )
             assert result == {"effort": "high", "summary": "detailed"}
         finally:
@@ -698,7 +747,7 @@ class TestTranslateThinkingToReasoning:
             litellm.reasoning_auto_summary = False
             os.environ["LITELLM_REASONING_AUTO_SUMMARY"] = "true"
             result = _ADAPTER.translate_thinking_to_reasoning(
-                {"type": "enabled", "budget_tokens": 5000}
+                {"type": "enabled", "budget_tokens": 2048}
             )
             assert result == {"effort": "medium", "summary": "detailed"}
         finally:
@@ -779,11 +828,24 @@ class TestTranslateRequestBroaderCoverage:
         assert kwargs["tool_choice"] == {"type": "function", "name": "do_thing"}
 
     def test_thinking_translated_to_reasoning(self):
-        req = _make_request(thinking={"type": "enabled", "budget_tokens": 12000})
+        req = _make_request(thinking={"type": "enabled", "budget_tokens": 4096})
         kwargs = _ADAPTER.translate_request(req)
         # reasoning_auto_summary is False by default, so no summary key
         assert kwargs["reasoning"] == {"effort": "high"}
         assert "summary" not in kwargs["reasoning"]
+
+    def test_output_config_effort_translated_to_reasoning(self):
+        req = _make_request(output_config={"effort": "low"})
+        kwargs = _ADAPTER.translate_request(req)
+        assert kwargs["reasoning"] == {"effort": "low"}
+
+    def test_output_config_effort_precedes_thinking(self):
+        req = _make_request(
+            output_config={"effort": "medium"},
+            thinking={"type": "enabled", "budget_tokens": 4096},
+        )
+        kwargs = _ADAPTER.translate_request(req)
+        assert kwargs["reasoning"] == {"effort": "medium"}
 
     def test_disabled_thinking_not_included_in_kwargs(self):
         req = _make_request(thinking={"type": "disabled"})

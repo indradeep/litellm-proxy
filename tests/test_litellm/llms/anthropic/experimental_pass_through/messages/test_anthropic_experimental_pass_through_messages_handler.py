@@ -183,9 +183,9 @@ def test_openai_model_with_thinking_converts_to_reasoning():
             "reasoning" in call_kwargs
         ), "reasoning should be passed to litellm.responses"
 
-        # budget_tokens=1024 -> effort="minimal" (< 2000 threshold)
+        # budget_tokens=1024 -> effort="low" with constant-aligned buckets
         # reasoning_auto_summary is False by default, so no summary key
-        expected_reasoning = {"effort": "minimal"}
+        expected_reasoning = {"effort": "low"}
         assert call_kwargs["reasoning"] == expected_reasoning, (
             f"reasoning should be {expected_reasoning} for budget_tokens=1024, "
             f"got {call_kwargs.get('reasoning')}"
@@ -229,7 +229,7 @@ class TestThinkingParameterTransformation:
         )
 
         # reasoning_auto_summary is False by default, so no summary key
-        assert result == {"reasoning_effort": "minimal"}
+        assert result == {"reasoning_effort": "low"}
         assert "thinking" not in result
         assert "summary" not in str(result["reasoning_effort"])
 
@@ -249,7 +249,7 @@ class TestThinkingParameterTransformation:
                 model="openai/gpt-5.2",
             )
             assert result == {
-                "reasoning_effort": {"effort": "medium", "summary": "detailed"}
+                "reasoning_effort": {"effort": "high", "summary": "detailed"}
             }
         finally:
             litellm.reasoning_auto_summary = original
@@ -260,12 +260,88 @@ class TestThinkingParameterTransformation:
             LiteLLMAnthropicMessagesAdapter,
         )
 
-        thinking = {"type": "enabled", "budget_tokens": 10000, "summary": "concise"}
+        thinking = {"type": "enabled", "budget_tokens": 4096, "summary": "concise"}
         result = LiteLLMAnthropicMessagesAdapter.translate_thinking_for_model(
             thinking=thinking,
             model="openai/gpt-5.2",
         )
         assert result == {"reasoning_effort": {"effort": "high", "summary": "concise"}}
+
+    def test_non_claude_model_output_config_effort_wins(self):
+        from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
+            LiteLLMAnthropicMessagesAdapter,
+        )
+        from litellm.types.llms.anthropic import AnthropicMessagesRequest
+
+        request = AnthropicMessagesRequest(
+            model="openai/gpt-5.2",
+            messages=[{"role": "user", "content": "hello"}],
+            max_tokens=1024,
+            thinking={"type": "enabled", "budget_tokens": 4096},
+            output_config={"effort": "medium"},
+        )
+
+        result, _ = LiteLLMAnthropicMessagesAdapter().translate_anthropic_to_openai(
+            anthropic_message_request=request
+        )
+        assert result["reasoning_effort"] == "medium"
+        assert "thinking" not in result
+
+    def test_non_claude_model_output_config_max_maps_to_xhigh(self):
+        from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
+            LiteLLMAnthropicMessagesAdapter,
+        )
+        from litellm.types.llms.anthropic import AnthropicMessagesRequest
+
+        request = AnthropicMessagesRequest(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hello"}],
+            max_tokens=1024,
+            output_config={"effort": "max"},
+        )
+
+        result, _ = LiteLLMAnthropicMessagesAdapter().translate_anthropic_to_openai(
+            anthropic_message_request=request
+        )
+        assert result["reasoning_effort"] == "xhigh"
+
+    def test_non_claude_model_output_config_xhigh_downgrades_for_gpt_5_1(self):
+        from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
+            LiteLLMAnthropicMessagesAdapter,
+        )
+        from litellm.types.llms.anthropic import AnthropicMessagesRequest
+
+        request = AnthropicMessagesRequest(
+            model="openai/gpt-5.1",
+            messages=[{"role": "user", "content": "hello"}],
+            max_tokens=1024,
+            output_config={"effort": "xhigh"},
+        )
+
+        result, _ = LiteLLMAnthropicMessagesAdapter().translate_anthropic_to_openai(
+            anthropic_message_request=request
+        )
+        assert result["reasoning_effort"] == "high"
+
+    def test_claude_model_preserves_output_config(self):
+        from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
+            LiteLLMAnthropicMessagesAdapter,
+        )
+        from litellm.types.llms.anthropic import AnthropicMessagesRequest
+
+        request = AnthropicMessagesRequest(
+            model="anthropic/claude-sonnet-4-5",
+            messages=[{"role": "user", "content": "hello"}],
+            max_tokens=1024,
+            thinking={"type": "enabled", "budget_tokens": 1024},
+            output_config={"effort": "high"},
+        )
+
+        result, _ = LiteLLMAnthropicMessagesAdapter().translate_anthropic_to_openai(
+            anthropic_message_request=request
+        )
+        assert result["thinking"] == {"type": "enabled", "budget_tokens": 1024}
+        assert result["output_config"] == {"effort": "high"}
 
 
 class TestThinkingSummaryPreservation:
@@ -462,7 +538,7 @@ class TestThinkingSummaryPreservation:
         result = LiteLLMAnthropicToResponsesAPIAdapter.translate_thinking_to_reasoning(
             thinking
         )
-        assert result == {"effort": "medium", "summary": "concise"}
+        assert result == {"effort": "high", "summary": "concise"}
 
     def test_responses_adapter_no_summary_by_default(self):
         """translate_thinking_to_reasoning should not include summary by default (opt-in)."""
@@ -480,7 +556,7 @@ class TestThinkingSummaryPreservation:
                     thinking
                 )
             )
-            assert result == {"effort": "medium"}
+            assert result == {"effort": "high"}
             assert result is not None and "summary" not in result
         finally:
             litellm.reasoning_auto_summary = original
@@ -497,5 +573,5 @@ class TestThinkingSummaryPreservation:
             model="openai/gpt-5.2",
         )
         assert result == {
-            "reasoning_effort": {"effort": "medium", "summary": "concise"}
+            "reasoning_effort": {"effort": "high", "summary": "concise"}
         }

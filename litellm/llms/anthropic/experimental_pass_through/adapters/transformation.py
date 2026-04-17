@@ -15,7 +15,8 @@ from typing import (
 )
 
 from litellm.llms.anthropic.experimental_pass_through.utils import (
-    is_reasoning_auto_summary_enabled,
+    build_openai_reasoning_param,
+    resolve_anthropic_reasoning_effort,
 )
 
 # OpenAI has a 64-character limit for function/tool names
@@ -316,6 +317,7 @@ class LiteLLMAnthropicMessagesAdapter:
             "tool_choice",
             "tools",
             "thinking",
+            "output_config",
             "output_format",
         ]
 
@@ -665,37 +667,12 @@ class LiteLLMAnthropicMessagesAdapter:
     def translate_anthropic_thinking_to_reasoning_effort(
         thinking: Dict[str, Any]
     ) -> Optional[str]:
-        """
-        Translate Anthropic's thinking parameter to OpenAI's reasoning_effort.
-
-        Anthropic thinking format: {'type': 'enabled'|'disabled', 'budget_tokens': int}
-        OpenAI reasoning_effort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'default'
-
-        Mapping:
-        - budget_tokens >= 10000 -> 'high'
-        - budget_tokens >= 5000  -> 'medium'
-        - budget_tokens >= 2000  -> 'low'
-        - budget_tokens < 2000   -> 'minimal'
-        """
-        if not isinstance(thinking, dict):
-            return None
-
-        thinking_type = thinking.get("type", "disabled")
-
-        if thinking_type == "disabled":
-            return None
-        elif thinking_type == "enabled":
-            budget_tokens = thinking.get("budget_tokens", 0)
-            if budget_tokens >= 10000:
-                return "high"
-            elif budget_tokens >= 5000:
-                return "medium"
-            elif budget_tokens >= 2000:
-                return "low"
-            else:
-                return "minimal"
-
-        return None
+        """Translate Anthropic thinking budgets to OpenAI reasoning_effort buckets."""
+        return resolve_anthropic_reasoning_effort(
+            output_config=None,
+            thinking=thinking,
+            model="",
+        )
 
     @staticmethod
     def is_anthropic_claude_model(model: str) -> bool:
@@ -733,31 +710,16 @@ class LiteLLMAnthropicMessagesAdapter:
         """
         if LiteLLMAnthropicMessagesAdapter.is_anthropic_claude_model(model):
             return {"thinking": thinking}
-        else:
-            reasoning_effort = LiteLLMAnthropicMessagesAdapter.translate_anthropic_thinking_to_reasoning_effort(
-                thinking
-            )
-            if reasoning_effort:
-                summary = (
-                    thinking.get("summary") if isinstance(thinking, dict) else None
-                )
-                auto_summary = is_reasoning_auto_summary_enabled()
-                if summary:
-                    return {
-                        "reasoning_effort": {
-                            "effort": reasoning_effort,
-                            "summary": summary,
-                        }
-                    }
-                elif auto_summary:
-                    return {
-                        "reasoning_effort": {
-                            "effort": reasoning_effort,
-                            "summary": "detailed",
-                        }
-                    }
-                return {"reasoning_effort": reasoning_effort}
+
+        reasoning_effort = build_openai_reasoning_param(
+            output_config=None,
+            thinking=thinking,
+            model=model,
+            always_dict=False,
+        )
+        if reasoning_effort is None:
             return {}
+        return {"reasoning_effort": reasoning_effort}
 
     def translate_anthropic_tool_choice_to_openai(
         self, tool_choice: AnthropicMessagesToolChoice
@@ -1016,55 +978,39 @@ class LiteLLMAnthropicMessagesAdapter:
         anthropic_message_request: AnthropicMessagesRequest,
         new_kwargs: ChatCompletionRequest,
     ) -> None:
-        """Translate Anthropic thinking to either thinking or reasoning_effort."""
-        if "thinking" not in anthropic_message_request:
-            return
-
-        thinking = anthropic_message_request["thinking"]
-        if not thinking:
+        """Translate Anthropic thinking/output_config to either thinking or reasoning_effort."""
+        thinking = anthropic_message_request.get("thinking")
+        output_config = anthropic_message_request.get("output_config")
+        if not thinking and not output_config:
             return
 
         model = new_kwargs.get("model", "")
         if self.is_anthropic_claude_model(model):
-            new_kwargs["thinking"] = thinking  # type: ignore
+            if thinking:
+                new_kwargs["thinking"] = thinking  # type: ignore
+            if output_config:
+                new_kwargs["output_config"] = output_config  # type: ignore
             return
 
-        reasoning_effort = self.translate_anthropic_thinking_to_reasoning_effort(
-            cast(Dict[str, Any], thinking)
+        reasoning_effort = build_openai_reasoning_param(
+            output_config=cast(Optional[Dict[str, Any]], output_config),
+            thinking=cast(Optional[Dict[str, Any]], thinking),
+            model=model,
+            always_dict=False,
         )
-        if not reasoning_effort:
-            return
-
-        summary = thinking.get("summary") if isinstance(thinking, dict) else None
-        auto_summary = is_reasoning_auto_summary_enabled()
-        if summary:
-            new_kwargs["reasoning_effort"] = cast(
-                Any,
-                {
-                    "effort": reasoning_effort,
-                    "summary": summary,
-                },
-            )
-        elif auto_summary:
-            new_kwargs["reasoning_effort"] = cast(
-                Any,
-                {
-                    "effort": reasoning_effort,
-                    "summary": "detailed",
-                },
-            )
-        else:
-            new_kwargs["reasoning_effort"] = reasoning_effort
+        if reasoning_effort is not None:
+            new_kwargs["reasoning_effort"] = cast(Any, reasoning_effort)
 
     def _translate_output_format_to_openai(
         self,
         anthropic_message_request: AnthropicMessagesRequest,
         new_kwargs: ChatCompletionRequest,
     ) -> None:
-        """Translate output_format to response_format when applicable."""
-        if "output_format" not in anthropic_message_request:
-            return
-        output_format = anthropic_message_request["output_format"]
+        """Translate output_format or output_config.format to response_format when applicable."""
+        output_format = anthropic_message_request.get("output_format")
+        output_config = anthropic_message_request.get("output_config")
+        if not output_format and isinstance(output_config, dict):
+            output_format = output_config.get("format")
         if not output_format:
             return
         response_format = self.translate_anthropic_output_format_to_openai(
