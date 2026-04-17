@@ -9,7 +9,7 @@ import json
 from typing import Any, Dict, List, Optional, Union, cast
 
 from litellm.llms.anthropic.experimental_pass_through.utils import (
-    is_reasoning_auto_summary_enabled,
+    build_openai_reasoning_param,
 )
 from litellm.types.llms.anthropic import (
     AllAnthropicToolsValues,
@@ -251,33 +251,19 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
 
     @staticmethod
     def translate_thinking_to_reasoning(
-        thinking: Dict[str, Any]
+        thinking: Dict[str, Any],
+        model: str = "",
     ) -> Optional[Dict[str, Any]]:
-        """
-        Convert Anthropic thinking param to Responses API reasoning param.
-
-        thinking.budget_tokens maps to reasoning effort:
-          >= 10000 -> high, >= 5000 -> medium, >= 2000 -> low, < 2000 -> minimal
-        """
-        if not isinstance(thinking, dict) or thinking.get("type") != "enabled":
+        """Convert Anthropic thinking param to Responses API reasoning param."""
+        reasoning = build_openai_reasoning_param(
+            output_config=None,
+            thinking=thinking,
+            model=model,
+            always_dict=True,
+        )
+        if not isinstance(reasoning, dict):
             return None
-        budget = thinking.get("budget_tokens", 0)
-        if budget >= 10000:
-            effort = "high"
-        elif budget >= 5000:
-            effort = "medium"
-        elif budget >= 2000:
-            effort = "low"
-        else:
-            effort = "minimal"
-        auto_summary = is_reasoning_auto_summary_enabled()
-        result: Dict[str, Any] = {"effort": effort}
-        summary = thinking.get("summary")
-        if summary:
-            result["summary"] = summary
-        elif auto_summary:
-            result["summary"] = "detailed"
-        return result
+        return reasoning
 
     def translate_request(
         self,
@@ -343,12 +329,17 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
                 cast(AnthropicMessagesToolChoice, tool_choice)
             )
 
-        # thinking -> reasoning
+        # output_config.effort / thinking -> reasoning
         thinking = anthropic_request.get("thinking")
-        if isinstance(thinking, dict):
-            reasoning = self.translate_thinking_to_reasoning(thinking)
-            if reasoning:
-                responses_kwargs["reasoning"] = reasoning
+        output_config = anthropic_request.get("output_config")
+        reasoning = build_openai_reasoning_param(
+            output_config=cast(Optional[Dict[str, Any]], output_config),
+            thinking=cast(Optional[Dict[str, Any]], thinking),
+            model=model,
+            always_dict=True,
+        )
+        if isinstance(reasoning, dict):
+            responses_kwargs["reasoning"] = reasoning
 
         # output_format / output_config.format -> text format
         # output_format: {"type": "json_schema", "schema": {...}}
