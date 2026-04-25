@@ -1,7 +1,7 @@
 """
 Handler for the Anthropic v1/messages -> OpenAI Responses API path.
 
-Used when the target model is an OpenAI or Azure model.
+Used when the target model is a direct OpenAI model.
 """
 
 from typing import Any, AsyncIterator, Coroutine, Dict, List, Optional, Union
@@ -115,7 +115,7 @@ def _build_responses_kwargs(
 
 class LiteLLMMessagesToResponsesAPIHandler:
     """
-    Handles Anthropic /v1/messages requests for OpenAI / Azure models by
+    Handles Anthropic /v1/messages requests for direct OpenAI models by
     calling litellm.responses() / litellm.aresponses() directly and translating
     the response back to Anthropic format.
     """
@@ -164,14 +164,16 @@ class LiteLLMMessagesToResponsesAPIHandler:
 
         if stream:
             wrapper = AnthropicResponsesStreamWrapper(
-                responses_stream=result, model=model
+                responses_stream=result,
+                model=model,
+                thinking=thinking,
             )
             return wrapper.async_anthropic_sse_wrapper()
 
         if not isinstance(result, ResponsesAPIResponse):
             raise ValueError(f"Expected ResponsesAPIResponse, got {type(result)}")
 
-        return _ADAPTER.translate_response(result)
+        return _ADAPTER.translate_response(result, thinking=thinking)
 
     @staticmethod
     def anthropic_messages_handler(
@@ -246,11 +248,13 @@ class LiteLLMMessagesToResponsesAPIHandler:
 
         if stream:
             wrapper = AnthropicResponsesStreamWrapper(
-                responses_stream=result, model=model
+                responses_stream=result,
+                model=model,
+                thinking=thinking,
             )
             return wrapper.async_anthropic_sse_wrapper()
 
         if not isinstance(result, ResponsesAPIResponse):
             raise ValueError(f"Expected ResponsesAPIResponse, got {type(result)}")
 
-        return _ADAPTER.translate_response(result)
+        return _ADAPTER.translate_response(result, thinking=thinking)

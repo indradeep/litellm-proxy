@@ -243,6 +243,44 @@ class TestNormalStreamFlow:
         assert types.count("message_start") == 1
         assert types[0] == "message_start"
 
+    def test_reasoning_summary_hidden_when_display_omitted(self):
+        reasoning_item = _make_item("reasoning", item_id="reason_01")
+        events = [
+            _make_event("response.created"),
+            _make_event("response.output_item.added", item=reasoning_item),
+            _make_event(
+                "response.reasoning_summary_text.delta",
+                item_id="reason_01",
+                delta="internal summary",
+            ),
+            _make_event("response.output_item.done", item=reasoning_item),
+            _make_event("response.completed", response=_make_completed_response()),
+        ]
+
+        async def _run():
+            wrapper = AnthropicResponsesStreamWrapper(
+                responses_stream=_aiter_from_list(events),
+                model="test-model",
+                thinking={
+                    "type": "enabled",
+                    "budget_tokens": 2048,
+                    "display": "omitted",
+                },
+            )
+            return await _collect_all_chunks(wrapper)
+
+        chunks = asyncio.run(_run())
+        assert all(
+            c.get("type") != "content_block_delta"
+            or c.get("delta", {}).get("type") != "thinking_delta"
+            for c in chunks
+        )
+        assert all(
+            c.get("type") != "content_block_start"
+            or c.get("content_block", {}).get("type") != "thinking"
+            for c in chunks
+        )
+
 
 # ---------------------------------------------------------------------------
 # Tests — SSE wrapper

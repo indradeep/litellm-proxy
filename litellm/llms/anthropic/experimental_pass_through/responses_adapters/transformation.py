@@ -2,7 +2,7 @@
 Transformation layer: Anthropic /v1/messages <-> OpenAI Responses API.
 
 This module owns all format conversions for the direct v1/messages -> Responses API
-path used for OpenAI and Azure models.
+path used for direct OpenAI models.
 """
 
 import json
@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Union, cast
 
 from litellm.llms.anthropic.experimental_pass_through.utils import (
     build_openai_reasoning_param,
+    should_expose_anthropic_thinking,
 )
 from litellm.types.llms.anthropic import (
     AllAnthropicToolsValues,
@@ -388,6 +389,7 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
     def translate_response(
         self,
         response: ResponsesAPIResponse,
+        thinking: Optional[Dict[str, Any]] = None,
     ) -> AnthropicMessagesResponse:
         """
         Translate an OpenAI ResponsesAPIResponse to AnthropicMessagesResponse.
@@ -403,8 +405,12 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
         content: List[Dict[str, Any]] = []
         stop_reason: AnthropicFinishReason = "end_turn"
 
+        expose_thinking = should_expose_anthropic_thinking(thinking)
+
         for item in response.output:
             if isinstance(item, ResponseReasoningItem):
+                if not expose_thinking:
+                    continue
                 for summary in item.summary:
                     text = getattr(summary, "text", "")
                     if text:

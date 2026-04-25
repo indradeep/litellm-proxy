@@ -3,10 +3,13 @@
 import json
 import traceback
 from collections import deque
-from typing import Any, AsyncIterator, Dict
+from typing import Any, AsyncIterator, Dict, Optional
 
 from litellm import verbose_logger
 from litellm._uuid import uuid
+from litellm.llms.anthropic.experimental_pass_through.utils import (
+    should_expose_anthropic_thinking,
+)
 
 
 class AnthropicResponsesStreamWrapper:
@@ -27,9 +30,11 @@ class AnthropicResponsesStreamWrapper:
         self,
         responses_stream: Any,
         model: str,
+        thinking: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.responses_stream = responses_stream
         self.model = model
+        self._expose_thinking = should_expose_anthropic_thinking(thinking)
         self._message_id: str = f"msg_{uuid.uuid4()}"
         self._current_block_index: int = -1
         # Map item_id -> content_block_index so we can stop the right block later
@@ -136,6 +141,8 @@ class AnthropicResponsesStreamWrapper:
                     }
                 )
             elif item_type == "reasoning":
+                if not self._expose_thinking:
+                    return
                 block_idx = self._next_block_index()
                 if item_id:
                     self._item_id_to_block_index[item_id] = block_idx
@@ -172,6 +179,8 @@ class AnthropicResponsesStreamWrapper:
 
         # ---- reasoning summary text delta ----
         if event_type == "response.reasoning_summary_text.delta":
+            if not self._expose_thinking:
+                return
             item_id = getattr(event, "item_id", None) or (
                 event.get("item_id") if isinstance(event, dict) else None
             )
@@ -219,12 +228,22 @@ class AnthropicResponsesStreamWrapper:
             item = getattr(event, "item", None) or (
                 event.get("item") if isinstance(event, dict) else None
             )
+            item_type = (
+                getattr(item, "type", None)
+                or (item.get("type") if isinstance(item, dict) else None)
+                if item
+                else None
+            )
             item_id = (
                 getattr(item, "id", None)
                 or (item.get("id") if isinstance(item, dict) else None)
                 if item
                 else None
             )
+            if item_type == "reasoning" and not self._expose_thinking:
+                return
+            if item_id and item_id not in self._item_id_to_block_index:
+                return
             block_idx = (
                 self._item_id_to_block_index.get(item_id, self._current_block_index)
                 if item_id

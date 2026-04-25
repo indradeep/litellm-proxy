@@ -12,6 +12,8 @@ from litellm.types.utils import ModelInfo
 
 OpenAIReasoningParam = Union[str, Dict[str, Any]]
 
+_ANTHROPIC_THINKING_DISPLAY_VALUES = {"summarized", "omitted"}
+
 
 def is_reasoning_auto_summary_enabled() -> bool:
     """Check whether the default 'summary: detailed' injection is enabled (opt-in)."""
@@ -19,6 +21,55 @@ def is_reasoning_auto_summary_enabled() -> bool:
         litellm.reasoning_auto_summary
         or os.getenv("LITELLM_REASONING_AUTO_SUMMARY", "false").lower() == "true"
     )
+
+
+def get_anthropic_thinking_display(thinking: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Return the requested Anthropic thinking display mode when present."""
+    if not isinstance(thinking, dict):
+        return None
+
+    display = thinking.get("display")
+    if isinstance(display, str):
+        normalized_display = display.lower()
+        if normalized_display in _ANTHROPIC_THINKING_DISPLAY_VALUES:
+            return normalized_display
+    return None
+
+
+def should_expose_anthropic_thinking(
+    thinking: Optional[Dict[str, Any]],
+) -> bool:
+    """
+    Whether Anthropic-visible thinking text should be surfaced back to the caller.
+
+    Anthropic's `display: "omitted"` should suppress visible thinking text in both
+    non-streaming and streaming adapter output.
+    """
+    return get_anthropic_thinking_display(thinking) != "omitted"
+
+
+def resolve_openai_reasoning_summary(
+    *,
+    thinking: Optional[Dict[str, Any]],
+    auto_summary_enabled: bool,
+) -> Optional[str]:
+    """
+    Resolve the OpenAI reasoning.summary value from Anthropic thinking settings.
+
+    Mapping rationale:
+    - Anthropic `display: "omitted"` means do not request a visible summary.
+    - Anthropic `display: "summarized"` is a binary request for visible reasoning,
+      so we map it to OpenAI's explicit visible summary mode (`detailed`).
+    """
+    display = get_anthropic_thinking_display(thinking)
+    if display == "omitted":
+        return None
+    if display == "summarized":
+        return "detailed"
+
+    if auto_summary_enabled:
+        return "detailed"
+    return None
 
 
 def _map_anthropic_effort_to_openai(
@@ -88,14 +139,15 @@ def build_openai_reasoning_param(
     if reasoning_effort is None:
         return None
 
-    summary = thinking.get("summary") if isinstance(thinking, dict) else None
     auto_summary = is_reasoning_auto_summary_enabled()
+    summary = resolve_openai_reasoning_summary(
+        thinking=thinking,
+        auto_summary_enabled=auto_summary,
+    )
     if summary:
         return {"effort": reasoning_effort, "summary": summary}
     if auto_summary or always_dict:
         result: Dict[str, Any] = {"effort": reasoning_effort}
-        if auto_summary:
-            result["summary"] = "detailed"
         return result
     return reasoning_effort
 

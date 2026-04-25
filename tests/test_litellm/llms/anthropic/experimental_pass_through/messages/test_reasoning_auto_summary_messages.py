@@ -154,13 +154,8 @@ class TestReasoningAutoSummaryMessages:
         thinking = params.get("thinking", {})
         assert thinking.get("display") == "summarized"
 
-    def test_omitted_overridden_to_summarized(self):
-        """User passes display='omitted' + reasoning_auto_summary=True -> overridden.
-
-        Documents current behavior: the code unconditionally sets
-        display='summarized' when auto_summary is enabled and thinking is active,
-        regardless of any pre-existing display value.
-        """
+    def test_omitted_preserved_when_auto_summary_enabled(self):
+        """Explicit display='omitted' must not be overridden by auto-summary."""
         with patch.object(litellm, "reasoning_auto_summary", True):
             params = _call_handler_and_capture_optional_params(
                 thinking={
@@ -170,4 +165,4 @@ class TestReasoningAutoSummaryMessages:
                 }
             )
         thinking = params.get("thinking", {})
-        assert thinking.get("display") == "summarized"
+        assert thinking.get("display") == "omitted"

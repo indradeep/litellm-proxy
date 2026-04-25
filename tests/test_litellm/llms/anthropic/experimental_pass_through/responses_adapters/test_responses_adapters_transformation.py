@@ -754,6 +754,17 @@ class TestTranslateThinkingToReasoning:
             litellm.reasoning_auto_summary = original
             os.environ.pop("LITELLM_REASONING_AUTO_SUMMARY", None)
 
+    def test_display_summarized_requests_visible_summary(self):
+        result = _ADAPTER.translate_thinking_to_reasoning(
+            {"type": "enabled", "budget_tokens": 2048, "display": "summarized"}
+        )
+        assert result == {"effort": "medium", "summary": "detailed"}
+
+    def test_display_omitted_suppresses_summary(self):
+        result = _ADAPTER.translate_thinking_to_reasoning(
+            {"type": "enabled", "budget_tokens": 2048, "display": "omitted"}
+        )
+        assert result == {"effort": "medium"}
 
 # ---------------------------------------------------------------------------
 # translate_request – broader coverage
@@ -818,6 +829,31 @@ class TestTranslateRequestBroaderCoverage:
         kwargs = _ADAPTER.translate_request(req)
         assert len(kwargs["tools"]) == 1
         assert kwargs["tools"][0]["name"] == "calculator"
+
+
+class TestTranslateResponseThinkingDisplay:
+    def test_translate_response_hides_reasoning_when_display_omitted(self):
+        response = _make_mock_response([_make_reasoning_item(["Hidden chain of thought"])])
+
+        result = _ADAPTER.translate_response(
+            response,
+            thinking={"type": "enabled", "budget_tokens": 2048, "display": "omitted"},
+        )
+        assert result["content"] == []
+
+    def test_translate_response_includes_reasoning_when_display_summarized(self):
+        response = _make_mock_response([_make_reasoning_item(["Visible reasoning summary"])])
+
+        result = _ADAPTER.translate_response(
+            response,
+            thinking={
+                "type": "enabled",
+                "budget_tokens": 2048,
+                "display": "summarized",
+            },
+        )
+        assert result["content"][0]["type"] == "thinking"
+        assert result["content"][0]["thinking"] == "Visible reasoning summary"
 
     def test_tool_choice_translated(self):
         req = _make_request(
