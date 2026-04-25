@@ -251,12 +251,13 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
 
     @staticmethod
     def translate_thinking_to_reasoning(
-        thinking: Dict[str, Any],
+        thinking: Optional[Dict[str, Any]],
         model: str = "",
+        output_config: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Convert Anthropic thinking param to Responses API reasoning param."""
+        """Convert Anthropic thinking/output_config to a Responses API reasoning param."""
         reasoning = build_openai_reasoning_param(
-            output_config=None,
+            output_config=output_config,
             thinking=thinking,
             model=model,
             always_dict=True,
@@ -323,22 +324,23 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
         # tool_choice
         tool_choice = anthropic_request.get("tool_choice")
         if tool_choice:
-            responses_kwargs[
-                "tool_choice"
-            ] = self.translate_tool_choice_to_responses_api(
-                cast(AnthropicMessagesToolChoice, tool_choice)
+            responses_kwargs["tool_choice"] = (
+                self.translate_tool_choice_to_responses_api(
+                    cast(AnthropicMessagesToolChoice, tool_choice)
+                )
             )
 
         # output_config.effort / thinking -> reasoning
-        thinking = anthropic_request.get("thinking")
-        output_config = anthropic_request.get("output_config")
-        reasoning = build_openai_reasoning_param(
-            output_config=cast(Optional[Dict[str, Any]], output_config),
-            thinking=cast(Optional[Dict[str, Any]], thinking),
-            model=model,
-            always_dict=True,
+        thinking = cast(Optional[Dict[str, Any]], anthropic_request.get("thinking"))
+        output_config = cast(
+            Optional[Dict[str, Any]], anthropic_request.get("output_config")
         )
-        if isinstance(reasoning, dict):
+        reasoning = self.translate_thinking_to_reasoning(
+            thinking,
+            model=model,
+            output_config=output_config,
+        )
+        if reasoning:
             responses_kwargs["reasoning"] = reasoning
 
         # output_format / output_config.format -> text format

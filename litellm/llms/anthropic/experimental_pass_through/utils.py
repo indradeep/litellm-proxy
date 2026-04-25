@@ -8,7 +8,7 @@ from litellm.constants import (
     DEFAULT_REASONING_EFFORT_MEDIUM_THINKING_BUDGET,
     DEFAULT_REASONING_EFFORT_MINIMAL_THINKING_BUDGET,
 )
-from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
+from litellm.types.utils import ModelInfo
 
 OpenAIReasoningParam = Union[str, Dict[str, Any]]
 
@@ -28,17 +28,21 @@ def _map_anthropic_effort_to_openai(
     normalized_effort = effort.lower()
     if normalized_effort in {"low", "medium", "high"}:
         return normalized_effort
-    if normalized_effort in {"max", "xhigh"}:
-        if OpenAIGPT5Config._supports_reasoning_effort_level(model, "xhigh"):
-            return "xhigh"
-        return "high"
+    if normalized_effort in {"minimal", "max", "xhigh"}:
+        return normalize_reasoning_effort_value(normalized_effort, model=model)
     return None
 
 
 def _map_anthropic_thinking_to_openai(
     thinking: Optional[Dict[str, Any]],
 ) -> Optional[str]:
-    if not isinstance(thinking, dict) or thinking.get("type") != "enabled":
+    if not isinstance(thinking, dict):
+        return None
+
+    thinking_type = thinking.get("type")
+    if thinking_type == "adaptive":
+        return "medium"
+    if thinking_type != "enabled":
         return None
 
     budget_tokens = thinking.get("budget_tokens", 0) or 0
@@ -94,3 +98,48 @@ def build_openai_reasoning_param(
             result["summary"] = "detailed"
         return result
     return reasoning_effort
+
+
+def normalize_reasoning_effort_value(
+    effort: str,
+    model: str,
+    custom_llm_provider: Optional[str] = None,
+) -> str:
+    """
+    Normalize a reasoning effort value based on model capabilities.
+
+    Degradation chains:
+    - "max"     -> max / xhigh / high
+    - "xhigh"   -> xhigh / high
+    - "minimal" -> minimal / low
+    - other values pass through unchanged
+    """
+    normalized_effort = effort.lower()
+    if normalized_effort not in ("max", "xhigh", "minimal"):
+        return normalized_effort
+
+    from litellm.utils import get_model_info
+
+    model_info: Optional[ModelInfo] = None
+    try:
+        model_info = get_model_info(
+            model=model, custom_llm_provider=custom_llm_provider
+        )
+    except Exception:
+        model_info = None
+
+    if normalized_effort == "max":
+        if model_info and model_info.get("supports_max_reasoning_effort"):
+            return "max"
+        if model_info and model_info.get("supports_xhigh_reasoning_effort"):
+            return "xhigh"
+        return "high"
+    if normalized_effort == "xhigh":
+        if model_info and model_info.get("supports_xhigh_reasoning_effort"):
+            return "xhigh"
+        return "high"
+    if normalized_effort == "minimal":
+        if model_info and model_info.get("supports_minimal_reasoning_effort"):
+            return "minimal"
+        return "low"
+    return "medium"
