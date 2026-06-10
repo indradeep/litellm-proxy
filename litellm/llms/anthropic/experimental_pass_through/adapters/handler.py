@@ -358,9 +358,11 @@ class LiteLLMMessagesToCompletionTransformationHandler:
 
         reasoning_effort = completion_kwargs.get("reasoning_effort")
         thinking_display = get_anthropic_thinking_display(thinking)
-        summary = resolve_openai_reasoning_summary(
+        user_summary = thinking.get("summary") if isinstance(thinking, dict) else None
+        auto_summary = is_reasoning_auto_summary_enabled()
+        summary = user_summary or resolve_openai_reasoning_summary(
             thinking=thinking,
-            auto_summary_enabled=is_reasoning_auto_summary_enabled(),
+            auto_summary_enabled=auto_summary,
         )
         if isinstance(reasoning_effort, str) and reasoning_effort:
             reasoning_dict: Dict[str, Any] = {"effort": reasoning_effort}

@@ -583,7 +583,7 @@ class TestThinkingSummaryPreservation:
         result = LiteLLMAnthropicToResponsesAPIAdapter.translate_thinking_to_reasoning(
             thinking
         )
-        assert result == {"effort": "medium", "summary": "concise"}
+        assert result == {"effort": "high", "summary": "concise"}
 
     def test_responses_adapter_no_summary_by_default(self):
         """translate_thinking_to_reasoning should not include summary by default (opt-in)."""
@@ -601,7 +601,7 @@ class TestThinkingSummaryPreservation:
                     thinking
                 )
             )
-            assert result == {"effort": "medium"}
+            assert result == {"effort": "high"}
             assert result is not None and "summary" not in result
         finally:
             litellm.reasoning_auto_summary = original
@@ -618,7 +618,7 @@ class TestThinkingSummaryPreservation:
             model="openai/gpt-5.2",
         )
         assert result == {
-            "reasoning_effort": {"effort": "medium", "summary": "concise"}
+            "reasoning_effort": {"effort": "high", "summary": "concise"}
         }
 
 

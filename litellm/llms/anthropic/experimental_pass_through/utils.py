@@ -140,7 +140,8 @@ def build_openai_reasoning_param(
         return None
 
     auto_summary = is_reasoning_auto_summary_enabled()
-    summary = resolve_openai_reasoning_summary(
+    user_summary = thinking.get("summary") if isinstance(thinking, dict) else None
+    summary = user_summary or resolve_openai_reasoning_summary(
         thinking=thinking,
         auto_summary_enabled=auto_summary,
     )
