@@ -1,3 +1,4 @@
+import html as _html
 import json
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -9,6 +10,11 @@ from litellm._logging import verbose_logger
 from litellm.llms.custom_httpx.http_handler import (
     get_async_httpx_client,
     httpxSpecialProvider,
+)
+from litellm.proxy._experimental.mcp_server.oauth_utils import (
+    TOKEN_NO_CACHE_HEADERS,
+    get_request_base_url,
+    validate_trusted_redirect_uri,
 )
 from litellm.proxy.auth.ip_address_utils import IPAddressUtils
 from litellm.proxy.common_utils.encrypt_decrypt_utils import (
@@ -23,55 +29,6 @@ from litellm.types.mcp_server.mcp_server_manager import MCPServer
 router = APIRouter(
     tags=["mcp"],
 )
-
-
-def get_request_base_url(request: Request) -> str:
-    """
-    Get the base URL for the request, considering X-Forwarded-* headers.
-
-    When behind a proxy (like nginx), the proxy may set:
-    - X-Forwarded-Proto: The original protocol (http/https)
-    - X-Forwarded-Host: The original host (may include port)
-    - X-Forwarded-Port: The original port (if not in Host header)
-
-    Args:
-        request: FastAPI Request object
-
-    Returns:
-        The reconstructed base URL (e.g., "https://proxy.example.com")
-    """
-    base_url = str(request.base_url).rstrip("/")
-    parsed = urlparse(base_url)
-
-    # Get forwarded headers
-    x_forwarded_proto = request.headers.get("X-Forwarded-Proto")
-    x_forwarded_host = request.headers.get("X-Forwarded-Host")
-    x_forwarded_port = request.headers.get("X-Forwarded-Port")
-
-    # Start with the original scheme
-    scheme = x_forwarded_proto if x_forwarded_proto else parsed.scheme
-
-    # Handle host and port
-    if x_forwarded_host:
-        # X-Forwarded-Host may already include port (e.g., "example.com:8080")
-        if ":" in x_forwarded_host and not x_forwarded_host.startswith("["):
-            # Host includes port
-            netloc = x_forwarded_host
-        elif x_forwarded_port:
-            # Port is separate
-            netloc = f"{x_forwarded_host}:{x_forwarded_port}"
-        else:
-            # Just host, no explicit port
-            netloc = x_forwarded_host
-    else:
-        # No X-Forwarded-Host, use original netloc
-        netloc = parsed.netloc
-        if x_forwarded_port and ":" not in netloc:
-            # Add forwarded port if not already in netloc
-            netloc = f"{netloc}:{x_forwarded_port}"
-
-    # Reconstruct the URL
-    return urlunparse((scheme, netloc, parsed.path, "", "", ""))
 
 
 def encode_state_with_base_url(
@@ -125,6 +82,26 @@ def decode_state_hash(encrypted_state: str) -> dict:
 
     state_data = json.loads(decrypted_json)
     return state_data
+
+
+def _get_validated_client_redirect_uri(
+    request: Request, state_data: Dict[str, Any]
+) -> str:
+    """Return a trusted (same-origin, loopback, or ops-allowlisted)
+    client redirect URI from OAuth state.
+    """
+    redirect_uri = state_data.get("client_redirect_uri") or state_data.get("base_url")
+    if not redirect_uri or not isinstance(redirect_uri, str):
+        raise HTTPException(status_code=400, detail="Invalid redirect URI")
+    validate_trusted_redirect_uri(request, redirect_uri)
+    return redirect_uri
+
+
+def _append_query_params(url: str, params: Dict[str, str]) -> str:
+    parsed = urlparse(url)
+    query_params = parse_qsl(parsed.query, keep_blank_values=True)
+    query_params.extend(params.items())
+    return urlunparse(parsed._replace(query=urlencode(query_params)))
 
 
 def _resolve_oauth2_server_for_root_endpoints(
@@ -322,15 +299,12 @@ async def authorize_with_server(
             status_code=400, detail="MCP server authorization url is not set"
         )
 
+    # Trusted redirect_uri: same-origin, loopback, or ops-allowlisted.
+    # The URI is encrypted into the OAuth state and decoded on
+    # /callback to redirect the user back; a non-trusted URI would be
+    # an open-redirect + code-theft primitive (VERIA-57 root cause B).
+    validate_trusted_redirect_uri(request, redirect_uri)
     parsed = urlparse(redirect_uri)
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "invalid_redirect_uri",
-                "message": "redirect_uri must use http or https scheme",
-            },
-        )
     base_url = urlunparse(parsed._replace(query=""))
     request_base_url = get_request_base_url(request)
     encoded_state = encode_state_with_base_url(
@@ -480,7 +454,8 @@ async def exchange_token_with_server(
     if "scope" in token_response and token_response["scope"]:
         result["scope"] = token_response["scope"]
 
-    return JSONResponse(result)
+    # RFC 6749 §5.1: token responses must not be cached.
+    return JSONResponse(result, headers=TOKEN_NO_CACHE_HEADERS)
 
 
 async def register_client_with_server(
@@ -565,7 +540,7 @@ async def authorize(
         else None
     )
     if mcp_server is None and mcp_server_name is None:
-        mcp_server = _resolve_oauth2_server_for_root_endpoints()
+        mcp_server = _resolve_oauth2_server_for_root_endpoints(client_ip=client_ip)
     if mcp_server is None:
         raise HTTPException(status_code=404, detail="MCP server not found")
     # Use server's stored client_id when caller doesn't supply one.
@@ -627,7 +602,7 @@ async def token_endpoint(
         lookup_name, client_ip=client_ip
     )
     if mcp_server is None and mcp_server_name is None:
-        mcp_server = _resolve_oauth2_server_for_root_endpoints()
+        mcp_server = _resolve_oauth2_server_for_root_endpoints(client_ip=client_ip)
     if mcp_server is None:
         raise HTTPException(status_code=404, detail="MCP server not found")
     return await exchange_token_with_server(
@@ -644,23 +619,126 @@ async def token_endpoint(
     )
 
 
+# Per RFC 6749 §4.1.2.1, an IdP that rejects an OAuth authorization request
+# redirects back to the configured redirect URI with ``error`` /
+# ``error_description`` / ``error_uri`` query params and no ``code``. The MCP
+# loopback flow funnels that response through this /callback endpoint, so
+# the endpoint must accept either a successful (``code``+``state``) or an
+# error response. Declaring ``code``/``state`` as required would cause
+# FastAPI to reject the error response with a 422 before the handler runs,
+# which strands the MCP client waiting on the loopback (see LIT-2750).
+
+
+def _render_oauth_error_html(error: str, description: Optional[str]) -> HTMLResponse:
+    """Render an actionable HTML page for an IdP-reported OAuth error.
+
+    Used when we cannot propagate the error back to the registered
+    ``redirect_uri`` (state missing or undecryptable). Returned with a 400
+    status so the failure is observable to operators while still being a
+    human-readable page for the end user.
+    """
+    safe_error = _html.escape(error or "unknown_error")
+    safe_description = _html.escape(description) if description else ""
+    description_html = f"<p>{safe_description}</p>" if safe_description else ""
+    body = (
+        "<html><body>"
+        "<h2>Authentication failed</h2>"
+        f"<p><strong>Error:</strong> {safe_error}</p>"
+        f"{description_html}"
+        "<p>You can close this window and try again.</p>"
+        "</body></html>"
+    )
+    return HTMLResponse(body, status_code=400)
+
+
 @router.get("/callback")
-async def callback(code: str, state: str):
+async def callback(
+    request: Request,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    error_description: Optional[str] = None,
+    error_uri: Optional[str] = None,
+):
+    """OAuth 2.0 authorization response handler for MCP loopback clients.
+
+    Accepts either:
+
+    - A successful authorization response (``code`` + ``state``), which is
+      forwarded back to the validated client ``redirect_uri`` with the
+      original (un-wrapped) ``state``.
+    - An error response (``error``[+``error_description``/``error_uri``]), per
+      RFC 6749 §4.1.2.1. When ``state`` is present and decodes to a trusted
+      ``redirect_uri``, the error params are propagated back to the client so
+      its OAuth library can surface them. Otherwise we render an HTML error
+      page so the user is not left on an opaque 422 / blank screen.
+    """
+    # 1. IdP-reported error path (e.g. ``?error=access_denied``).
+    if error:
+        verbose_logger.info(
+            "MCP /callback received IdP error: error=%s, error_description=%s",
+            error,
+            error_description,
+        )
+        if state:
+            try:
+                state_data = decode_state_hash(state)
+                original_state = state_data.get("original_state")
+                redirect_uri = _get_validated_client_redirect_uri(request, state_data)
+            except HTTPException:
+                # Untrusted/invalid client redirect_uri — surface inline rather
+                # than blindly forwarding the error to an attacker-controlled URL.
+                return _render_oauth_error_html(error, error_description)
+            except Exception:
+                # State could not be decrypted (expired key, tampered, etc.).
+                return _render_oauth_error_html(error, error_description)
+
+            params: Dict[str, str] = {"error": error}
+            if error_description:
+                params["error_description"] = error_description
+            if error_uri:
+                params["error_uri"] = error_uri
+            if original_state is not None:
+                params["state"] = original_state
+            complete_returned_url = _append_query_params(redirect_uri, params)
+            return RedirectResponse(url=complete_returned_url, status_code=302)
+
+        # No state — nothing to round-trip to. Show the user the error.
+        return _render_oauth_error_html(error, error_description)
+
+    # 2. Neither success nor error parameters present — most likely a stray
+    #    GET / dropped SSO redirect chain. Surface a 400 instead of 422.
+    if not code or not state:
+        missing = [
+            name for name, value in (("code", code), ("state", state)) if not value
+        ]
+        return _render_oauth_error_html(
+            "invalid_request",
+            f"Missing authorization {' and '.join(repr(m) for m in missing)} parameter(s).",
+        )
+
+    # 3. Successful authorization response.
     try:
-        # Decode the state hash to get base_url, original state, and PKCE params
         state_data = decode_state_hash(state)
-        base_url = state_data["base_url"]
         original_state = state_data["original_state"]
 
-        # Forward code and original state back to client
-        params = {"code": code, "state": original_state}
+        # Re-validate the client redirect URI at the sink. /authorize
+        # rejects untrusted URIs before encoding them into state, but
+        # encrypted states minted before that check was added have no
+        # expiry and remain valid indefinitely. Validating here blocks
+        # the open-redirect + code-theft primitive even for pre-fix
+        # states while permitting same-origin / allowlisted clients.
+        redirect_uri = _get_validated_client_redirect_uri(request, state_data)
 
-        # Forward to client's callback endpoint
-        complete_returned_url = f"{base_url}?{urlencode(params)}"
+        params = {"code": code, "state": original_state}
+        complete_returned_url = _append_query_params(redirect_uri, params)
         return RedirectResponse(url=complete_returned_url, status_code=302)
 
+    except HTTPException:
+        # Re-raise so a non-loopback base_url surfaces as 400 instead of
+        # a generic "authentication incomplete" redirect.
+        raise
     except Exception:
-        # fallback if state hash not found
         return HTMLResponse(
             "<html><body>Authentication incomplete. You can close this window.</body></html>"
         )
@@ -710,16 +788,16 @@ def _build_oauth_protected_resource_response(
     )
 
     request_base_url = get_request_base_url(request)
+    client_ip = IPAddressUtils.get_mcp_client_ip(request)
 
     # When no server name provided, try to resolve the single OAuth2 server
     if mcp_server_name is None:
-        resolved = _resolve_oauth2_server_for_root_endpoints()
+        resolved = _resolve_oauth2_server_for_root_endpoints(client_ip=client_ip)
         if resolved:
             mcp_server_name = resolved.server_name or resolved.name
 
     mcp_server: Optional[MCPServer] = None
     if mcp_server_name:
-        client_ip = IPAddressUtils.get_mcp_client_ip(request)
         mcp_server = global_mcp_server_manager.get_mcp_server_by_name(
             mcp_server_name, client_ip=client_ip
         )
@@ -826,10 +904,11 @@ def _build_oauth_authorization_server_response(
     )
 
     request_base_url = get_request_base_url(request)
+    client_ip = IPAddressUtils.get_mcp_client_ip(request)
 
     # When no server name provided, try to resolve the single OAuth2 server
     if mcp_server_name is None:
-        resolved = _resolve_oauth2_server_for_root_endpoints()
+        resolved = _resolve_oauth2_server_for_root_endpoints(client_ip=client_ip)
         if resolved:
             mcp_server_name = resolved.server_name or resolved.name
 
@@ -846,7 +925,6 @@ def _build_oauth_authorization_server_response(
 
     mcp_server: Optional[MCPServer] = None
     if mcp_server_name:
-        client_ip = IPAddressUtils.get_mcp_client_ip(request)
         mcp_server = global_mcp_server_manager.get_mcp_server_by_name(
             mcp_server_name, client_ip=client_ip
         )
@@ -998,8 +1076,9 @@ async def register_client(request: Request, mcp_server_name: Optional[str] = Non
         "client_secret": "dummy",
         "redirect_uris": [f"{request_base_url}/callback"],
     }
+    client_ip = IPAddressUtils.get_mcp_client_ip(request)
     if not mcp_server_name:
-        resolved = _resolve_oauth2_server_for_root_endpoints()
+        resolved = _resolve_oauth2_server_for_root_endpoints(client_ip=client_ip)
         if resolved:
             return await register_client_with_server(
                 request=request,
@@ -1012,7 +1091,6 @@ async def register_client(request: Request, mcp_server_name: Optional[str] = Non
             )
         return dummy_return
 
-    client_ip = IPAddressUtils.get_mcp_client_ip(request)
     mcp_server = global_mcp_server_manager.get_mcp_server_by_name(
         mcp_server_name, client_ip=client_ip
     )

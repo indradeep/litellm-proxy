@@ -17,7 +17,7 @@ from litellm.types.utils import Delta, ModelResponse, StreamingChoices
 def test_anthropic_experimental_pass_through_messages_handler():
     """
     Test that api key is passed to litellm.responses for OpenAI models.
-    Direct OpenAI models are routed directly to the Responses API.
+    OpenAI and Azure models are routed directly to the Responses API.
     """
     from litellm.llms.anthropic.experimental_pass_through.messages.handler import (
         anthropic_messages_handler,
@@ -62,6 +62,51 @@ def test_anthropic_experimental_pass_through_messages_handler_dynamic_api_key_an
         assert mock_completion.call_args.kwargs["api_key"] == "test-api-key"
         assert mock_completion.call_args.kwargs["api_base"] == "test-api-base"
         assert mock_completion.call_args.kwargs["custom_key"] == "custom_value"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_messages_sanitizes_empty_text_blocks_before_dispatch():
+    """Regression test for #22930.  The unified /v1/messages path must
+    strip empty text blocks before forwarding, otherwise Anthropic
+    returns 400 "text content blocks must be non-empty"."""
+    from litellm.llms.anthropic.experimental_pass_through.messages import handler
+
+    msgs = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": ""},
+                {"type": "tool_use", "id": "t", "name": "B", "input": {}},
+            ],
+        }
+    ]
+    captured = {}
+
+    def fake_handler(*args, **kwargs):
+        captured["messages"] = kwargs.get("messages")
+        return "stub"
+
+    fake_loop = MagicMock()
+    fake_loop.run_in_executor = lambda _e, func: _async_return(func())
+
+    with (
+        patch.object(handler, "anthropic_messages_handler", side_effect=fake_handler),
+        patch("asyncio.get_event_loop", return_value=fake_loop),
+    ):
+        await handler.anthropic_messages(
+            max_tokens=100,
+            messages=msgs,
+            model="anthropic/claude-sonnet-4-5-20250929",
+            custom_llm_provider="anthropic",
+            api_key="k",
+        )
+
+    assert [b["type"] for b in captured["messages"][0]["content"]] == ["tool_use"]
+    assert len(msgs[0]["content"]) == 2  # caller untouched
+
+
+async def _async_return(value):
+    return value
 
 
 def test_anthropic_experimental_pass_through_messages_handler_custom_llm_provider():
@@ -228,6 +273,7 @@ class TestThinkingParameterTransformation:
             model="openai/gpt-5.2",
         )
 
+        # budget_tokens=1024 -> effort="low" with constant-aligned buckets
         # reasoning_auto_summary is False by default, so no summary key
         assert result == {"reasoning_effort": "low"}
         assert "thinking" not in result
@@ -293,65 +339,54 @@ class TestThinkingParameterTransformation:
         assert result["reasoning_effort"] == "medium"
         assert "thinking" not in result
 
-    def test_non_claude_model_output_config_max_maps_to_xhigh(self):
+    def test_translate_thinking_for_model_preserves_user_summary(self):
+        """User-provided summary is always preserved regardless of flag."""
         from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
             LiteLLMAnthropicMessagesAdapter,
         )
-        from litellm.types.llms.anthropic import AnthropicMessagesRequest
 
-        request = AnthropicMessagesRequest(
-            model="gpt-5.4",
-            messages=[{"role": "user", "content": "hello"}],
-            max_tokens=1024,
-            output_config={"effort": "max"},
+        thinking = {"type": "enabled", "budget_tokens": 10000, "summary": "concise"}
+        result = LiteLLMAnthropicMessagesAdapter.translate_thinking_for_model(
+            thinking=thinking,
+            model="openai/gpt-5.2",
+        )
+        assert result == {"reasoning_effort": {"effort": "high", "summary": "concise"}}
+
+
+class TestThinkingSummaryPreservation:
+    """Tests for thinking.summary preservation and reasoning_auto_summary flag."""
+
+    def test_thinking_summary_concise_preserved_for_openai(self):
+        """User-provided summary='concise' should not be replaced with 'detailed'."""
+        from litellm.llms.anthropic.experimental_pass_through.adapters.handler import (
+            LiteLLMMessagesToCompletionTransformationHandler,
         )
 
-        result, _ = LiteLLMAnthropicMessagesAdapter().translate_anthropic_to_openai(
-            anthropic_message_request=request
+        thinking = {"type": "enabled", "budget_tokens": 5000, "summary": "concise"}
+        completion_kwargs = {"model": "openai/gpt-5.1", "reasoning_effort": "medium"}
+        LiteLLMMessagesToCompletionTransformationHandler._route_openai_thinking_to_responses_api_if_needed(
+            completion_kwargs, thinking=thinking
         )
-        assert result["reasoning_effort"] == "xhigh"
+        assert completion_kwargs["reasoning_effort"] == {
+            "effort": "medium",
+            "summary": "concise",
+        }
 
-    def test_non_claude_model_output_config_xhigh_downgrades_for_gpt_5_1(self):
-        from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
-            LiteLLMAnthropicMessagesAdapter,
-        )
-        from litellm.types.llms.anthropic import AnthropicMessagesRequest
-
-        request = AnthropicMessagesRequest(
-            model="openai/gpt-5.1",
-            messages=[{"role": "user", "content": "hello"}],
-            max_tokens=1024,
-            output_config={"effort": "xhigh"},
+    def test_thinking_summary_auto_preserved_for_openai(self):
+        """User-provided summary='auto' should be preserved."""
+        from litellm.llms.anthropic.experimental_pass_through.adapters.handler import (
+            LiteLLMMessagesToCompletionTransformationHandler,
         )
 
-        result, _ = LiteLLMAnthropicMessagesAdapter().translate_anthropic_to_openai(
-            anthropic_message_request=request
+        thinking = {"type": "enabled", "budget_tokens": 10000, "summary": "auto"}
+        completion_kwargs = {"model": "openai/gpt-5.1", "reasoning_effort": "high"}
+        LiteLLMMessagesToCompletionTransformationHandler._route_openai_thinking_to_responses_api_if_needed(
+            completion_kwargs, thinking=thinking
         )
-        assert result["reasoning_effort"] == "high"
-
-    def test_claude_model_preserves_output_config(self):
-        from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
-            LiteLLMAnthropicMessagesAdapter,
-        )
-        from litellm.types.llms.anthropic import AnthropicMessagesRequest
-
-        request = AnthropicMessagesRequest(
-            model="anthropic/claude-sonnet-4-5",
-            messages=[{"role": "user", "content": "hello"}],
-            max_tokens=1024,
-            thinking={"type": "enabled", "budget_tokens": 1024},
-            output_config={"effort": "high"},
-        )
-
-        result, _ = LiteLLMAnthropicMessagesAdapter().translate_anthropic_to_openai(
-            anthropic_message_request=request
-        )
-        assert result["thinking"] == {"type": "enabled", "budget_tokens": 1024}
-        assert result["output_config"] == {"effort": "high"}
-
-
-class TestThinkingDisplayBehavior:
-    """Tests for Anthropic thinking.display handling and auto-summary behavior."""
+        assert completion_kwargs["reasoning_effort"] == {
+            "effort": "high",
+            "summary": "auto",
+        }
 
     def test_display_summarized_requests_openai_summary(self):
         """display='summarized' should request a visible OpenAI reasoning summary."""
@@ -487,8 +522,30 @@ class TestThinkingDisplayBehavior:
             litellm.reasoning_auto_summary = original
             os.environ.pop("LITELLM_REASONING_AUTO_SUMMARY", None)
 
-    def test_openai_model_with_display_summarized_end_to_end(self):
-        """End-to-end: display='summarized' produces an OpenAI reasoning summary request."""
+    def test_user_provided_summary_preserved_even_when_flag_off(self):
+        """When user already set summary in dict reasoning_effort, it's preserved regardless of flag."""
+        import litellm
+        from litellm.llms.anthropic.experimental_pass_through.adapters.handler import (
+            LiteLLMMessagesToCompletionTransformationHandler,
+        )
+
+        original = litellm.reasoning_auto_summary
+        try:
+            litellm.reasoning_auto_summary = False
+            completion_kwargs = {
+                "model": "responses/gpt-5.2",
+                "custom_llm_provider": "openai",
+                "reasoning_effort": {"effort": "high", "summary": "concise"},
+            }
+            LiteLLMMessagesToCompletionTransformationHandler._route_openai_thinking_to_responses_api_if_needed(
+                completion_kwargs, thinking={"type": "enabled", "budget_tokens": 10000}
+            )
+            assert completion_kwargs["reasoning_effort"]["summary"] == "concise"
+        finally:
+            litellm.reasoning_auto_summary = original
+
+    def test_openai_model_with_thinking_summary_end_to_end(self):
+        """End-to-end: anthropic_messages_handler should preserve thinking.summary for OpenAI models."""
         from litellm.llms.anthropic.experimental_pass_through.messages.handler import (
             anthropic_messages_handler,
         )
@@ -503,7 +560,7 @@ class TestThinkingDisplayBehavior:
                     thinking={
                         "type": "enabled",
                         "budget_tokens": 5000,
-                        "display": "summarized",
+                        "summary": "concise",
                     },
                 )
             except (ValueError, TypeError, AttributeError):
@@ -513,51 +570,20 @@ class TestThinkingDisplayBehavior:
             call_kwargs = mock_responses.call_args.kwargs
             reasoning = call_kwargs["reasoning"]
             assert (
-                reasoning["summary"] == "detailed"
-            ), f"Expected summary='detailed', got summary='{reasoning.get('summary')}'"
+                reasoning["summary"] == "concise"
+            ), f"Expected summary='concise', got summary='{reasoning.get('summary')}'"
 
-    def test_openai_model_with_display_omitted_end_to_end(self):
-        """End-to-end: display='omitted' should avoid requesting an OpenAI summary."""
-        from litellm.llms.anthropic.experimental_pass_through.messages.handler import (
-            anthropic_messages_handler,
-        )
-
-        with patch("litellm.responses", return_value="test-response") as mock_responses:
-            try:
-                anthropic_messages_handler(
-                    max_tokens=1024,
-                    messages=[{"role": "user", "content": "What is 2+2?"}],
-                    model="openai/gpt-5.2",
-                    api_key="test-api-key",
-                    thinking={
-                        "type": "enabled",
-                        "budget_tokens": 5000,
-                        "display": "omitted",
-                    },
-                )
-            except (ValueError, TypeError, AttributeError):
-                pass
-
-            mock_responses.assert_called_once()
-            call_kwargs = mock_responses.call_args.kwargs
-            reasoning = call_kwargs["reasoning"]
-            assert reasoning == {"effort": "high"}
-
-    def test_responses_adapter_display_summarized_requests_summary(self):
-        """translate_thinking_to_reasoning should use display='summarized' for summary requests."""
+    def test_responses_adapter_preserves_summary(self):
+        """translate_thinking_to_reasoning should include summary when user provides it."""
         from litellm.llms.anthropic.experimental_pass_through.responses_adapters.transformation import (
             LiteLLMAnthropicToResponsesAPIAdapter,
         )
 
-        thinking = {
-            "type": "enabled",
-            "budget_tokens": 5000,
-            "display": "summarized",
-        }
+        thinking = {"type": "enabled", "budget_tokens": 5000, "summary": "concise"}
         result = LiteLLMAnthropicToResponsesAPIAdapter.translate_thinking_to_reasoning(
             thinking
         )
-        assert result == {"effort": "high", "summary": "detailed"}
+        assert result == {"effort": "medium", "summary": "concise"}
 
     def test_responses_adapter_no_summary_by_default(self):
         """translate_thinking_to_reasoning should not include summary by default (opt-in)."""
@@ -575,24 +601,151 @@ class TestThinkingDisplayBehavior:
                     thinking
                 )
             )
-            assert result == {"effort": "high"}
+            assert result == {"effort": "medium"}
             assert result is not None and "summary" not in result
         finally:
             litellm.reasoning_auto_summary = original
 
-    def test_translate_thinking_for_model_display_omitted_suppresses_summary(self):
-        """translate_thinking_for_model should not request summary when display='omitted'."""
+    def test_translate_thinking_for_model_preserves_summary(self):
+        """translate_thinking_for_model should include summary in reasoning_effort dict when user provides it."""
         from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
             LiteLLMAnthropicMessagesAdapter,
         )
 
-        thinking = {
-            "type": "enabled",
-            "budget_tokens": 5000,
-            "display": "omitted",
-        }
+        thinking = {"type": "enabled", "budget_tokens": 5000, "summary": "concise"}
         result = LiteLLMAnthropicMessagesAdapter.translate_thinking_for_model(
             thinking=thinking,
             model="openai/gpt-5.2",
         )
-        assert result == {"reasoning_effort": "high"}
+        assert result == {
+            "reasoning_effort": {"effort": "medium", "summary": "concise"}
+        }
+
+
+# ---------------------------------------------------------------------------
+# Parity tests: redundant empty-text-block sanitization scan removal.
+# The async wrapper sanitizes once and tells the handler to skip its second
+# (redundant) full-messages scan; the sync entry point still sanitizes.
+# ---------------------------------------------------------------------------
+
+
+def _empty_block_msgs():
+    return [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "   "},  # whitespace-only -> stripped
+                {"type": "tool_use", "id": "t", "name": "B", "input": {}},
+            ],
+        }
+    ]
+
+
+def test_handler_strips_when_no_presanitized_flag():
+    """Sync entry point (no async wrapper): handler must still sanitize."""
+    from litellm.llms.anthropic.experimental_pass_through.messages import handler
+
+    with patch.object(
+        handler,
+        "strip_empty_text_blocks_from_anthropic_messages",
+        wraps=handler.strip_empty_text_blocks_from_anthropic_messages,
+    ) as spy:
+        result = handler.anthropic_messages_handler(
+            max_tokens=10,
+            messages=_empty_block_msgs(),
+            model="anthropic/claude-3-5-sonnet-20241022",
+            custom_llm_provider="anthropic",
+            mock_response="hi there",
+        )
+    assert spy.call_count == 1  # sanitized exactly once here
+    assert result is not None
+
+
+def test_handler_skips_strip_when_presanitized():
+    """Async wrapper already sanitized -> handler must NOT rescan."""
+    from litellm.llms.anthropic.experimental_pass_through.messages import handler
+
+    with patch.object(
+        handler,
+        "strip_empty_text_blocks_from_anthropic_messages",
+        wraps=handler.strip_empty_text_blocks_from_anthropic_messages,
+    ) as spy:
+        result = handler.anthropic_messages_handler(
+            max_tokens=10,
+            messages=_empty_block_msgs(),
+            model="anthropic/claude-3-5-sonnet-20241022",
+            custom_llm_provider="anthropic",
+            mock_response="hi there",
+            _litellm_messages_presanitized=True,
+        )
+    assert spy.call_count == 0  # skipped the redundant scan
+    assert result is not None
+
+
+def test_presanitized_flag_not_leaked_to_provider_params():
+    """The private sentinel must be popped, never forwarded as a request param."""
+    from litellm.llms.anthropic.experimental_pass_through.messages import handler
+
+    captured = {}
+
+    def fake_base_handler(*args, **kwargs):
+        captured.update(kwargs)
+        captured["optional"] = kwargs.get(
+            "anthropic_messages_optional_request_params", {}
+        )
+        return "stub"
+
+    with patch.object(
+        handler.base_llm_http_handler,
+        "anthropic_messages_handler",
+        side_effect=fake_base_handler,
+    ):
+        handler.anthropic_messages_handler(
+            max_tokens=10,
+            messages=[{"role": "user", "content": "hi"}],
+            model="anthropic/claude-3-5-sonnet-20241022",
+            custom_llm_provider="anthropic",
+            _litellm_messages_presanitized=True,
+        )
+
+    assert "_litellm_messages_presanitized" not in captured.get("optional", {})
+    assert "_litellm_messages_presanitized" not in captured.get("kwargs", {})
+
+
+@pytest.mark.asyncio
+async def test_async_wrapper_sets_presanitized_and_sanitizes_once():
+    """End-to-end: wrapper sanitizes (once) AND signals the handler to skip."""
+    from litellm.llms.anthropic.experimental_pass_through.messages import handler
+
+    captured = {}
+
+    def fake_handler(*args, **kwargs):
+        captured["messages"] = kwargs.get("messages")
+        captured["presanitized"] = kwargs.get("_litellm_messages_presanitized")
+        return "stub"
+
+    fake_loop = MagicMock()
+    fake_loop.run_in_executor = lambda _e, func: _async_return(func())
+
+    with (
+        patch.object(handler, "anthropic_messages_handler", side_effect=fake_handler),
+        patch("asyncio.get_event_loop", return_value=fake_loop),
+        patch.object(
+            handler,
+            "strip_empty_text_blocks_from_anthropic_messages",
+            wraps=handler.strip_empty_text_blocks_from_anthropic_messages,
+        ) as spy,
+    ):
+        await handler.anthropic_messages(
+            max_tokens=100,
+            messages=_empty_block_msgs(),
+            model="anthropic/claude-sonnet-4-5-20250929",
+            custom_llm_provider="anthropic",
+            api_key="k",
+        )
+
+    # Wrapper stripped exactly once (the handler is faked, so its skipped
+    # call never runs anyway -- the point is the wrapper still sanitizes).
+    assert spy.call_count == 1
+    assert captured["presanitized"] is True
+    assert [b["type"] for b in captured["messages"][0]["content"]] == ["tool_use"]

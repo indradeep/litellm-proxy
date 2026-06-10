@@ -3,6 +3,7 @@ import { useTeams } from "@/app/(dashboard)/hooks/teams/useTeams";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import {
   ApiOutlined,
+  ApartmentOutlined,
   AppstoreOutlined,
   AuditOutlined,
   BankOutlined,
@@ -31,7 +32,14 @@ import {
 import type { MenuProps } from "antd";
 import { ConfigProvider, Layout, Menu } from "antd";
 import { useMemo } from "react";
-import { all_admin_roles, internalUserRoles, isAdminRole, isUserTeamAdminForAnyTeam, rolesWithWriteAccess } from "../utils/roles";
+import {
+  all_admin_roles,
+  internalUserRoles,
+  isAdminRole,
+  isUserTeamAdminForAnyTeam,
+  rolesAllowedToViewWriteScopedPages,
+  rolesWithWriteAccess,
+} from "../utils/roles";
 import NewBadge from "./common_components/NewBadge";
 import type { Organization } from "./networking";
 import UsageIndicator from "./UsageIndicator";
@@ -41,12 +49,9 @@ const { Sider } = Layout;
 /**
  * Pages migrated to path-based routing under (dashboard)/.
  * Key = legacy page id, Value = route segment.
- * Keep in sync with MIGRATED_PAGES in (dashboard)/layout.tsx and
- * LEGACY_REDIRECTS in app/page.tsx.
+ * Keep in sync with MIGRATED_PAGES in (dashboard)/layout.tsx.
  */
-const MIGRATED_PAGES: Record<string, string> = {
-  "api-reference": "api-reference",
-};
+const MIGRATED_PAGES: Record<string, string> = {};
 
 /** Build an absolute href for a migrated page, respecting base URL + serverRootPath. */
 function migratedHref(routeSegment: string): string {
@@ -117,14 +122,38 @@ const menuGroups: MenuGroup[] = [
         page: "models",
         label: "Models + Endpoints",
         icon: <BlockOutlined />,
-        roles: rolesWithWriteAccess,
+        // Admin Viewer can view models read-only (write actions are
+        // hidden inside the page); Playground above stays write-only.
+        roles: rolesAllowedToViewWriteScopedPages,
       },
       {
-        key: "agents",
-        page: "agents",
-        label: "Agents",
+        key: "agentic",
+        page: "agentic",
+        label: "Agentic",
         icon: <RobotOutlined />,
-        roles: rolesWithWriteAccess,
+        children: [
+          {
+            key: "agents",
+            page: "agents",
+            label: "Agents",
+            icon: <RobotOutlined />,
+            // Admin Viewer can view agents read-only (write actions are
+            // hidden inside the page); Playground above stays write-only.
+            roles: rolesAllowedToViewWriteScopedPages,
+          },
+          {
+            key: "workflows",
+            page: "workflows",
+            label: "Workflow Runs",
+            icon: <ApartmentOutlined />,
+          },
+          {
+            key: "memory",
+            page: "memory",
+            label: "Memory",
+            icon: <BookOutlined />,
+          },
+        ],
       },
       {
         key: "mcp-servers",
@@ -263,8 +292,8 @@ const menuGroups: MenuGroup[] = [
     groupLabel: "DEVELOPER TOOLS",
     items: [
       {
-        key: "api-reference",
-        page: "api-reference",
+        key: "api_ref",
+        page: "api_ref",
         label: "API Reference",
         icon: <ApiOutlined />,
       },

@@ -6,7 +6,7 @@ The A2A SDK can point to LiteLLM's URL and invoke agents registered with LiteLLM
 """
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -258,9 +258,17 @@ async def get_agent_card(
                 detail=f"Agent '{agent_id}' is not allowed for your key/team. Contact proxy admin for access.",
             )
 
+        if not agent.agent_card_params:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Agent '{agent_id}' has no agent card configured",
+            )
+
         # Copy and rewrite URL to point to LiteLLM proxy
-        agent_card = dict(agent.agent_card_params)
-        agent_card["url"] = f"{str(request.base_url).rstrip('/')}/a2a/{agent_id}"
+        agent_card = {
+            **agent.agent_card_params,
+            "url": f"{str(request.base_url).rstrip('/')}/a2a/{agent_id}",
+        }
 
         verbose_proxy_logger.debug(
             f"Returning agent card for '{agent_id}' with proxy URL: {agent_card['url']}"
@@ -332,9 +340,14 @@ async def invoke_agent_a2a(  # noqa: PLR0915
 
         if params:
             # extract any litellm params from the params - eg. 'guardrails'
+            # ``metadata`` is intentionally excluded: it's a first-class A2A
+            # ``MessageSendParams`` field that the completion bridge forwards
+            # downstream via ``get_forward_metadata``. Stripping it here would
+            # collide with litellm's spend-tracking ``metadata`` kwarg and
+            # silently drop the caller's A2A request-level metadata.
             params_to_remove = []
             for key, value in params.items():
-                if key in all_litellm_params:
+                if key in all_litellm_params and key != "metadata":
                     params_to_remove.append(key)
                     body[key] = value
             for key in params_to_remove:
@@ -368,8 +381,9 @@ async def invoke_agent_a2a(  # noqa: PLR0915
         _enforce_inbound_trace_id(agent, request)
 
         # Get backend URL and agent name
-        agent_url = agent.agent_card_params.get("url")
-        agent_name = agent.agent_card_params.get("name", agent_id)
+        agent_card_params = agent.agent_card_params or {}
+        agent_url = agent_card_params.get("url")
+        agent_name = agent_card_params.get("name", agent_id)
 
         # Get litellm_params (may include custom_llm_provider for completion bridge)
         litellm_params = agent.litellm_params or {}
@@ -390,6 +404,7 @@ async def invoke_agent_a2a(  # noqa: PLR0915
         if "metadata" not in body:
             body["metadata"] = {}
         body["metadata"]["agent_id"] = agent.agent_id
+        body["agent_id"] = agent.agent_id
 
         body.update(
             {
@@ -444,6 +459,21 @@ async def invoke_agent_a2a(  # noqa: PLR0915
             static_headers=static_headers or None,
         )
 
+        # Merge agent-level guardrails into data so post_call_success_hook and
+        # _handle_stream_message both pick them up.  A2A agents use model
+        # a2a_agent/*, which is not an llm_router deployment, so
+        # _check_and_merge_model_level_guardrails() skips them.
+        _agent_guardrails = litellm_params.get("guardrails")
+        if _agent_guardrails:
+            if not isinstance(_agent_guardrails, list):
+                _agent_guardrails = [_agent_guardrails]
+            _existing_guardrails: List = data.get("guardrails") or []
+            if not isinstance(_existing_guardrails, list):
+                _existing_guardrails = [_existing_guardrails]
+            data["guardrails"] = _existing_guardrails + [
+                g for g in _agent_guardrails if g not in _existing_guardrails
+            ]
+
         # Route through SDK functions
         if method == "message/send":
             from a2a.types import MessageSendParams, SendMessageRequest
@@ -452,6 +482,9 @@ async def invoke_agent_a2a(  # noqa: PLR0915
                 id=request_id,
                 params=MessageSendParams(**params),
             )
+            # Defer spend-log until after post_call_success_hook so guardrail
+            # results written by the unified_guardrail hook are captured.
+            logging_obj._defer_async_logging = True  # type: ignore[union-attr]
             response = await asend_message(
                 request=a2a_request,
                 api_base=agent_url,
@@ -463,11 +496,18 @@ async def invoke_agent_a2a(  # noqa: PLR0915
                 agent_extra_headers=agent_extra_headers,
             )
 
-            response = await proxy_logging_obj.post_call_success_hook(
-                user_api_key_dict=user_api_key_dict,
-                data=data,
-                response=response,
-            )
+            try:
+                response = await proxy_logging_obj.post_call_success_hook(
+                    user_api_key_dict=user_api_key_dict,
+                    data=data,
+                    response=response,
+                )
+            finally:
+                _enqueue_fn = getattr(logging_obj, "_enqueue_deferred_logging", None)
+                if _enqueue_fn is not None:
+                    logging_obj._enqueue_deferred_logging = None  # type: ignore[union-attr]
+                    _enqueue_fn()
+
             return JSONResponse(
                 content=(
                     response.model_dump(mode="json", exclude_none=True)  # type: ignore

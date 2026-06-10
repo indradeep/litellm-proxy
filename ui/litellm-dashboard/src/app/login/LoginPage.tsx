@@ -4,7 +4,7 @@ import { useLogin } from "@/app/(dashboard)/hooks/login/useLogin";
 import { useUIConfig } from "@/app/(dashboard)/hooks/uiConfig/useUIConfig";
 import LoadingScreen from "@/components/common_components/LoadingScreen";
 import { exchangeLoginCode, getProxyBaseUrl, switchToWorkerUrl } from "@/components/networking";
-import { clearTokenCookies, getCookie } from "@/utils/cookieUtils";
+import { clearTokenCookies, getCookieFromDocument } from "@/utils/cookieUtils";
 import { isJwtExpired } from "@/utils/jwtUtils";
 import { consumeReturnUrl, getReturnUrl, isValidReturnUrl } from "@/utils/returnUrlUtils";
 import { InfoCircleOutlined, CloudServerOutlined } from "@ant-design/icons";
@@ -66,21 +66,6 @@ function LoginPageContent() {
       return;
     }
 
-    // Backwards compat: handle direct token in URL (legacy flow)
-    const urlToken = params.get("token");
-    if (urlToken && !isJwtExpired(urlToken)) {
-      document.cookie = `token=${urlToken}; path=/; SameSite=Lax`;
-      params.delete("token");
-      const cleanSearch = params.toString();
-      window.history.replaceState(
-        null,
-        "",
-        window.location.pathname + (cleanSearch ? `?${cleanSearch}` : ""),
-      );
-      router.replace("/ui/?login=success");
-      return;
-    }
-
     // If switching workers on a control plane, clear the old token and show login
     const switchingWorker = params.has("worker");
     if (switchingWorker && uiConfig?.is_control_plane) {
@@ -89,7 +74,7 @@ function LoginPageContent() {
       return;
     }
 
-    const rawToken = getCookie("token");
+    const rawToken = getCookieFromDocument("token");
     if (rawToken && !isJwtExpired(rawToken)) {
       // User already logged in - redirect to return URL or default
       const returnUrl = consumeReturnUrl();
