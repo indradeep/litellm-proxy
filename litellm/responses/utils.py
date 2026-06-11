@@ -533,6 +533,68 @@ class ResponsesAPIRequestUtils:
         return decoded_response_id.get("response_id", previous_response_id)
 
     @staticmethod
+    def _response_from_completed_stream_event(
+        completed_event: Any,
+    ) -> ResponsesAPIResponse:
+        response = getattr(completed_event, "response", None)
+        if response is None and isinstance(completed_event, dict):
+            response = completed_event.get("response")
+        if response is None:
+            raise litellm.APIError(
+                message="Responses stream ended without a completed response payload",
+                llm_provider="",
+                model="",
+            )
+        if isinstance(response, ResponsesAPIResponse):
+            return response
+        if isinstance(response, dict):
+            return ResponsesAPIResponse(**response)
+        if hasattr(response, "model_dump"):
+            return ResponsesAPIResponse(**response.model_dump())
+        raise litellm.APIError(
+            message=f"Unexpected completed stream response type: {type(response)}",
+            llm_provider="",
+            model="",
+        )
+
+    @staticmethod
+    def collect_sync_responses_stream(streaming_iterator: Any) -> ResponsesAPIResponse:
+        """Drain a sync Responses API stream and return the final response object."""
+        while True:
+            try:
+                next(streaming_iterator)
+            except StopIteration:
+                break
+        completed_event = getattr(streaming_iterator, "completed_response", None)
+        if completed_event is None:
+            raise litellm.APIError(
+                message="Responses stream ended without response.completed",
+                llm_provider="",
+                model="",
+            )
+        return ResponsesAPIRequestUtils._response_from_completed_stream_event(
+            completed_event
+        )
+
+    @staticmethod
+    async def collect_async_responses_stream(
+        streaming_iterator: Any,
+    ) -> ResponsesAPIResponse:
+        """Drain an async Responses API stream and return the final response object."""
+        async for _ in streaming_iterator:
+            pass
+        completed_event = getattr(streaming_iterator, "completed_response", None)
+        if completed_event is None:
+            raise litellm.APIError(
+                message="Responses stream ended without response.completed",
+                llm_provider="",
+                model="",
+            )
+        return ResponsesAPIRequestUtils._response_from_completed_stream_event(
+            completed_event
+        )
+
+    @staticmethod
     def _build_container_id(
         custom_llm_provider: Optional[str],
         model_id: Optional[str],

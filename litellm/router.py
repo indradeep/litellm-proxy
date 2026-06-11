@@ -2510,11 +2510,10 @@ class Router:
                 self.responses_api_provider_config = getattr(
                     source_iterator, "responses_api_provider_config", None
                 )
-                self.completed_response = None
+                self._source_iterator = source_iterator
                 self.start_time = getattr(source_iterator, "start_time", datetime.now())
                 self._failure_handled = False
                 self._completed_response_cached = False
-                self._completed_response_logged = False
                 self._completed_response_cache_hit = None
                 self._persist_completed_response_before_logging = True
                 self._stream_created_time = time.time()
@@ -2531,6 +2530,17 @@ class Router:
                 self._hidden_params = dict(
                     getattr(source_iterator, "_hidden_params", None) or {}
                 )
+
+            @property
+            def completed_response(self):
+                return getattr(self._source_iterator, "completed_response", None)
+
+            def _handle_logging_completed_response(self):
+                handler = getattr(
+                    self._source_iterator, "_handle_logging_completed_response", None
+                )
+                if callable(handler):
+                    handler()
 
             def __aiter__(self):
                 return self

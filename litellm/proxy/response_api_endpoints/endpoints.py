@@ -23,6 +23,48 @@ from litellm.types.responses.main import DeleteResponseResult
 router = APIRouter()
 
 
+def _resolve_responses_logging_target(responses_iterator: Any) -> Any:
+    """Return the iterator that owns completed_response / spend-log hooks."""
+    source = getattr(responses_iterator, "_source_iterator", None)
+    return source if source is not None else responses_iterator
+
+
+async def _cursor_sse_with_responses_logging(
+    stream: AsyncIterator[str],
+    responses_iterator: Any,
+) -> AsyncIterator[str]:
+    """Ensure Responses API success logging runs after the cursor SSE stream ends."""
+    logging_target = _resolve_responses_logging_target(responses_iterator)
+    chunk_count = 0
+    try:
+        async for chunk in stream:
+            chunk_count += 1
+            yield chunk
+    finally:
+        completed = getattr(logging_target, "completed_response", None)
+        already_logged = getattr(logging_target, "_completed_response_logged", False)
+        verbose_proxy_logger.debug(
+            "cursor SSE stream ended: chunks=%s model=%s completed_response=%s "
+            "already_logged=%s wrapper=%s",
+            chunk_count,
+            getattr(logging_target, "model", None),
+            completed is not None,
+            already_logged,
+            type(responses_iterator).__name__,
+        )
+        if (
+            logging_target is not None
+            and completed is not None
+            and not already_logged
+            and hasattr(logging_target, "_handle_logging_completed_response")
+        ):
+            verbose_proxy_logger.debug(
+                "cursor SSE: flushing Responses API spend log for model=%s",
+                getattr(logging_target, "model", None),
+            )
+            logging_target._handle_logging_completed_response()
+
+
 @router.post(
     "/v1/responses",
     dependencies=[Depends(user_api_key_auth)],
@@ -376,14 +418,19 @@ async def cursor_chat_completions(
             streamwrapper = CustomStreamWrapper(
                 completion_stream=completion_stream,
                 model=request_data.get("model", ""),
-                custom_llm_provider=None,
+                custom_llm_provider=request_data.get("custom_llm_provider"),
                 logging_obj=logging_obj,
             )
-            # Use async_data_generator to format as SSE
-            return async_data_generator(
+            # Use async_data_generator to format as SSE, then guarantee Responses
+            # API success logging after the client finishes consuming the stream.
+            sse_stream = async_data_generator(
                 response=streamwrapper,
                 user_api_key_dict=user_api_key_dict,
                 request_data=request_data,
+            )
+            return _cursor_sse_with_responses_logging(
+                stream=sse_stream,
+                responses_iterator=response,
             )
         # Otherwise, use the default generator
         return async_data_generator(

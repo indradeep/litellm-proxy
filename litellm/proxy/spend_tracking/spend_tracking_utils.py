@@ -315,7 +315,20 @@ def get_logging_payload(  # noqa: PLR0915
         request_tags = json.dumps(standard_logging_payload["request_tags"])
 
     _model_id = metadata.get("model_info", {}).get("id", "")
-    _model_group = metadata.get("model_group", "")
+    _model_group = metadata.get("model_group_alias") or metadata.get("model_group", "")
+    if standard_logging_payload is not None:
+        sl_model_group = standard_logging_payload.get("model_group")
+        if metadata.get("model_group_alias"):
+            _model_group = metadata.get("model_group_alias")
+        elif sl_model_group:
+            _model_group = sl_model_group
+    # When router aliases map gpt-5.5 -> oca/gpt-5.5, prefer the client model.
+    if isinstance(_model_group, str) and "/" in _model_group:
+        proxy_body = (litellm_params.get("proxy_server_request") or {}).get("body")
+        if isinstance(proxy_body, dict):
+            client_model = proxy_body.get("model")
+            if isinstance(client_model, str) and client_model and "/" not in client_model:
+                _model_group = client_model
 
     # Extract overhead from hidden_params if available
     litellm_overhead_time_ms = None

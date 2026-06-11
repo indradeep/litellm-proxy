@@ -5094,17 +5094,30 @@ class StandardLoggingPayloadSetup:
                 model_map_key="", model_map_value=None
             )
         else:
-            try:
-                _model_cost_information = litellm.get_model_info(
-                    model=model_cost_name,
-                    custom_llm_provider=custom_llm_provider,
-                    api_base=api_base,
-                )
+            _model_cost_information = None
+            providers_to_try: List[Optional[str]] = []
+            if custom_llm_provider:
+                providers_to_try.append(custom_llm_provider)
+            if "oca" not in providers_to_try:
+                providers_to_try.append("oca")
+            providers_to_try.append(None)
+            for provider in providers_to_try:
+                try:
+                    lookup_kwargs: Dict[str, Any] = {"model": model_cost_name}
+                    if provider is not None:
+                        lookup_kwargs["custom_llm_provider"] = provider
+                    if api_base is not None:
+                        lookup_kwargs["api_base"] = api_base
+                    _model_cost_information = litellm.get_model_info(**lookup_kwargs)
+                    break
+                except Exception:
+                    continue
+            if _model_cost_information is not None:
                 model_cost_information = StandardLoggingModelInformation(
                     model_map_key=model_cost_name,
                     model_map_value=_model_cost_information,
                 )
-            except Exception:
+            else:
                 verbose_logger.debug(  # keep in debug otherwise it will trigger on every call
                     "Model={} is not mapped in model cost map. Defaulting to None model_cost_information for standard_logging_payload".format(
                         model_cost_name
@@ -5562,7 +5575,10 @@ def get_standard_logging_object_payload(
         id = response_obj.get("id", kwargs.get("litellm_call_id"))
 
         _model_id = metadata.get("model_info", {}).get("id", "")
-        _model_group = metadata.get("model_group", "")
+        # Prefer client-facing alias (e.g. gpt-5.5) over routed deployment name (oca/gpt-5.5).
+        _model_group = metadata.get("model_group_alias") or metadata.get(
+            "model_group", ""
+        )
 
         request_tags = StandardLoggingPayloadSetup._get_request_tags(
             litellm_params=litellm_params, proxy_server_request=proxy_server_request

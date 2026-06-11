@@ -2636,6 +2636,38 @@ def completion(  # type: ignore # noqa: PLR0915
             logging.post_call(
                 input=messages, api_key=api_key, original_response=response
             )
+        elif custom_llm_provider == "oca":
+            api_base = (
+                api_base
+                or litellm.api_base
+                or get_secret_str("OCA_API_BASE")
+            )
+            headers = headers or litellm.headers or {}
+            # OCA always returns SSE regardless of the stream parameter.
+            stream = True
+            optional_params["stream"] = True
+            response = base_llm_http_handler.completion(
+                model=model,
+                messages=messages,
+                headers=headers,
+                model_response=model_response,
+                api_key=api_key,
+                api_base=api_base,
+                acompletion=acompletion,
+                logging_obj=logging,
+                optional_params=optional_params,
+                litellm_params=litellm_params,
+                shared_session=shared_session,
+                timeout=timeout,
+                client=client,
+                custom_llm_provider=custom_llm_provider,
+                encoding=_get_encoding(),
+                stream=True,
+                provider_config=provider_config,
+            )
+            logging.post_call(
+                input=messages, api_key=api_key, original_response=response
+            )
         elif (
             model in litellm.open_ai_chat_completion_models
             or custom_llm_provider == "custom_openai"

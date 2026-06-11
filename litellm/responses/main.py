@@ -1157,6 +1157,22 @@ def responses(
             input
         )
 
+        # OCA Zero Data Retention: rebuild full input and drop previous_response_id.
+        from litellm.llms.oca.common_utils import (
+            is_oca_request,
+            prepare_oca_zdr_responses_request,
+        )
+        from litellm.types.utils import LlmProviders
+
+        if custom_llm_provider == LlmProviders.OCA.value or is_oca_request(
+            model=model, api_base=litellm_params.api_base
+        ):
+            input, responses_api_request_params = run_async_function(
+                prepare_oca_zdr_responses_request,
+                input=input,
+                response_api_optional_params=responses_api_request_params,
+            )
+
         # Call the handler with _is_async flag instead of directly calling the async handler
         if custom_llm_provider is None:
             raise ValueError("custom_llm_provider is required but passed as None")

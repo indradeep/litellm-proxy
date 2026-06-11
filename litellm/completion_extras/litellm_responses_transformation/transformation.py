@@ -1197,6 +1197,24 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
         return self.chunk_parser(json.loads(str_line))
 
     @staticmethod
+    def _chat_chunk_metadata_from_responses_event(
+        parsed_chunk: dict,
+    ) -> dict[str, Any]:
+        """Extract chat-completion chunk metadata from a Responses API stream event."""
+        response_data = parsed_chunk.get("response") or {}
+        metadata: dict[str, Any] = {}
+        response_id = response_data.get("id")
+        if isinstance(response_id, str) and response_id:
+            metadata["id"] = response_id
+        created_at = response_data.get("created_at")
+        if created_at is not None:
+            metadata["created"] = int(created_at)
+        model = response_data.get("model")
+        if isinstance(model, str) and model:
+            metadata["model"] = model
+        return metadata
+
+    @staticmethod
     def translate_responses_chunk_to_openai_stream(  # noqa: PLR0915
         parsed_chunk: Union[dict, BaseModel],
     ) -> "ModelResponseStream":
@@ -1252,7 +1270,10 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
                         delta=Delta(content=""),
                         finish_reason=None,
                     )
-                ]
+                ],
+                **OpenAiResponsesToChatCompletionStreamIterator._chat_chunk_metadata_from_responses_event(
+                    parsed_chunk
+                ),
             )
         elif event_type == "response.output_item.added":
             # New output item added
@@ -1300,6 +1321,26 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
                         )
                     ]
                 )
+            elif output_item.get("type") == "custom_tool_call":
+                tool_call_index = parsed_chunk.get("output_index", 0)
+                tool_call_chunk = ChatCompletionToolCallChunk(
+                    id=output_item.get("call_id"),
+                    index=tool_call_index,
+                    type="function",
+                    function=ChatCompletionToolCallFunctionChunk(
+                        name=output_item.get("name"),
+                        arguments=output_item.get("input", "") or "",
+                    ),
+                )
+                return ModelResponseStream(
+                    choices=[
+                        StreamingChoices(
+                            index=0,
+                            delta=Delta(tool_calls=[tool_call_chunk]),
+                            finish_reason=None,
+                        )
+                    ]
+                )
         elif event_type == "response.function_call_arguments.delta":
             content_part: Optional[str] = parsed_chunk.get("delta", None)
             if content_part:
@@ -1328,6 +1369,40 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
                 raise ValueError(
                     f"Chat provider: Invalid function argument delta {parsed_chunk}"
                 )
+        elif event_type == "response.custom_tool_call_input.delta":
+            content_part = parsed_chunk.get("delta", None)
+            if content_part:
+                tool_call_index = parsed_chunk.get("output_index", 0)
+                return ModelResponseStream(
+                    choices=[
+                        StreamingChoices(
+                            index=0,
+                            delta=Delta(
+                                tool_calls=[
+                                    ChatCompletionToolCallChunk(
+                                        id=None,
+                                        index=tool_call_index,
+                                        type="function",
+                                        function=ChatCompletionToolCallFunctionChunk(
+                                            name=None, arguments=content_part
+                                        ),
+                                    )
+                                ]
+                            ),
+                            finish_reason=None,
+                        )
+                    ]
+                )
+        elif event_type == "response.custom_tool_call_input.done":
+            return ModelResponseStream(
+                choices=[
+                    StreamingChoices(
+                        index=0,
+                        delta=Delta(),
+                        finish_reason=None,
+                    )
+                ]
+            )
         elif event_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
             # New output item added
             output_item = parsed_chunk.get("item", {})
@@ -1370,6 +1445,16 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
                 # finish_reason. Emitting "tool_calls" here would prematurely terminate
                 # the stream before subsequent tool calls arrive (same fix as #17246 for
                 # the message-type branch).
+                return ModelResponseStream(
+                    choices=[
+                        StreamingChoices(
+                            index=0,
+                            delta=Delta(),
+                            finish_reason=None,
+                        )
+                    ]
+                )
+            elif output_item.get("type") == "custom_tool_call":
                 return ModelResponseStream(
                     choices=[
                         StreamingChoices(
@@ -1427,13 +1512,13 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
             response_data = parsed_chunk.get("response", {})
             output_items = response_data.get("output", []) if response_data else []
 
-            has_function_calls = any(
-                item.get("type") == "function_call"
+            has_tool_calls = any(
+                item.get("type") in ("function_call", "custom_tool_call")
                 for item in output_items
                 if isinstance(item, dict)
             )
 
-            finish_reason = "tool_calls" if has_function_calls else "stop"
+            finish_reason = "tool_calls" if has_tool_calls else "stop"
 
             # Extract reasoning items with encrypted_content for round-tripping
             completed_reasoning_items: Optional[List[Dict[str, Any]]] = None
@@ -1475,6 +1560,9 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
                     )
                 ],
                 usage=usage,
+                **OpenAiResponsesToChatCompletionStreamIterator._chat_chunk_metadata_from_responses_event(
+                    parsed_chunk
+                ),
             )
         else:
             pass

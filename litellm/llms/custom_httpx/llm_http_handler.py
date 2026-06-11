@@ -2285,6 +2285,9 @@ class BaseLLMHTTPHandler:
 
         # Check if streaming is requested
         stream = response_api_optional_request_params.get("stream", False)
+        buffer_stream_to_response = (
+            responses_api_provider_config.requires_streaming_upstream(stream)
+        )
 
         api_base = responses_api_provider_config.get_complete_url(
             api_base=litellm_params.api_base,
@@ -2302,6 +2305,9 @@ class BaseLLMHTTPHandler:
 
         if extra_body:
             data.update(extra_body)
+
+        if buffer_stream_to_response:
+            data["stream"] = True
 
         # Preserve the OpenAI-style request context (not sent to the provider) for streaming
         # hooks/metadata; the streaming iterator now consumes this to run deployment hooks
@@ -2327,7 +2333,7 @@ class BaseLLMHTTPHandler:
         )
 
         try:
-            if stream:
+            if stream or buffer_stream_to_response:
                 # For streaming, use stream=True in the request
                 if fake_stream is True:
                     stream, data = self._prepare_fake_stream_request(
@@ -2342,7 +2348,7 @@ class BaseLLMHTTPHandler:
                     json=data,
                     timeout=timeout
                     or float(response_api_optional_request_params.get("timeout", 0)),
-                    stream=stream,
+                    stream=True,
                 )
                 if fake_stream is True:
                     return MockResponsesAPIStreamingIterator(
@@ -2356,7 +2362,7 @@ class BaseLLMHTTPHandler:
                         call_type=CallTypes.responses.value,
                     )
 
-                return SyncResponsesAPIStreamingIterator(
+                streaming_iterator = SyncResponsesAPIStreamingIterator(
                     response=response,
                     model=model,
                     logging_obj=logging_obj,
@@ -2366,6 +2372,13 @@ class BaseLLMHTTPHandler:
                     request_data=request_context,
                     call_type=CallTypes.responses.value,
                 )
+                if buffer_stream_to_response:
+                    from litellm.responses.utils import ResponsesAPIRequestUtils
+
+                    return ResponsesAPIRequestUtils.collect_sync_responses_stream(
+                        streaming_iterator
+                    )
+                return streaming_iterator
             else:
                 # For non-streaming requests
                 response = sync_httpx_client.post(
@@ -2431,6 +2444,9 @@ class BaseLLMHTTPHandler:
 
         # Check if streaming is requested
         stream = response_api_optional_request_params.get("stream", False)
+        buffer_stream_to_response = (
+            responses_api_provider_config.requires_streaming_upstream(stream)
+        )
 
         api_base = responses_api_provider_config.get_complete_url(
             api_base=litellm_params.api_base,
@@ -2448,6 +2464,9 @@ class BaseLLMHTTPHandler:
 
         if extra_body:
             data.update(extra_body)
+
+        if buffer_stream_to_response:
+            data["stream"] = True
 
         # Preserve the OpenAI-style request context (not sent to the provider) for streaming
         # hooks/metadata; the streaming iterator now consumes this to run deployment hooks
@@ -2473,7 +2492,7 @@ class BaseLLMHTTPHandler:
         )
 
         try:
-            if stream:
+            if stream or buffer_stream_to_response:
                 # For streaming, we need to use stream=True in the request
                 if fake_stream is True:
                     stream, data = self._prepare_fake_stream_request(
@@ -2488,7 +2507,7 @@ class BaseLLMHTTPHandler:
                     json=data,
                     timeout=timeout
                     or float(response_api_optional_request_params.get("timeout", 0)),
-                    stream=stream,
+                    stream=True,
                 )
 
                 if fake_stream is True:
@@ -2503,8 +2522,7 @@ class BaseLLMHTTPHandler:
                         call_type=CallTypes.responses.value,
                     )
 
-                # Return the streaming iterator
-                return ResponsesAPIStreamingIterator(
+                streaming_iterator = ResponsesAPIStreamingIterator(
                     response=response,
                     model=model,
                     logging_obj=logging_obj,
@@ -2514,6 +2532,13 @@ class BaseLLMHTTPHandler:
                     request_data=request_context,
                     call_type=CallTypes.responses.value,
                 )
+                if buffer_stream_to_response:
+                    from litellm.responses.utils import ResponsesAPIRequestUtils
+
+                    return await ResponsesAPIRequestUtils.collect_async_responses_stream(
+                        streaming_iterator
+                    )
+                return streaming_iterator
             else:
                 # For non-streaming, proceed as before
                 response = await async_httpx_client.post(

@@ -180,18 +180,32 @@ def get_litellm_metadata_from_kwargs(kwargs: dict):
 
     Return `litellm_metadata` if it exists, otherwise return `metadata`
     """
-    litellm_params = kwargs.get("litellm_params", {})
-    if litellm_params:
-        metadata = litellm_params.get("metadata", {})
-        litellm_metadata = litellm_params.get("litellm_metadata", {})
-        if litellm_metadata and metadata:
-            litellm_metadata = add_missing_spend_metadata_to_litellm_metadata(
-                litellm_metadata, metadata
-            )
-        if litellm_metadata:
-            return litellm_metadata
-        elif metadata:
-            return metadata
+    litellm_params = kwargs.get("litellm_params", {}) or {}
+    metadata = litellm_params.get("metadata", {}) or {}
+    litellm_metadata = litellm_params.get("litellm_metadata", {}) or {}
+
+    # Router /responses paths keep routing metadata on the top-level kwargs too.
+    top_level_litellm_metadata = kwargs.get("litellm_metadata")
+    if isinstance(top_level_litellm_metadata, dict):
+        litellm_metadata = {**litellm_metadata, **top_level_litellm_metadata}
+
+    top_level_metadata = kwargs.get("metadata")
+    if isinstance(top_level_metadata, dict):
+        metadata = {**metadata, **top_level_metadata}
+
+    if litellm_metadata and metadata:
+        litellm_metadata = add_missing_spend_metadata_to_litellm_metadata(
+            litellm_metadata, metadata
+        )
+    elif metadata and not litellm_metadata:
+        litellm_metadata = metadata
+    elif litellm_metadata and not metadata:
+        pass
+    elif metadata:
+        litellm_metadata = metadata
+
+    if litellm_metadata:
+        return litellm_metadata
 
     return {}
 

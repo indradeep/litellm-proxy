@@ -237,6 +237,7 @@ class _ProxyDBLogger(CustomLogger):
                     user_id=user_id,
                     team_id=team_id,
                     end_user_id=end_user_id,
+                    metadata=metadata,
                 ):
                     ## UPDATE DATABASE
                     await _update_database_and_spend_counters(
@@ -414,6 +415,7 @@ def _should_track_cost_callback(
     user_id: Optional[str],
     team_id: Optional[str],
     end_user_id: Optional[str],
+    metadata: Optional[dict] = None,
 ) -> bool:
     """
     Determine if the cost callback should be tracked based on the kwargs
@@ -430,6 +432,14 @@ def _should_track_cost_callback(
         or end_user_id is not None
     ):
         return True
+
+    # Cursor /responses callbacks may only carry hashed key metadata.
+    if metadata and (
+        metadata.get("user_api_key_hash")
+        or metadata.get("user_api_key_user_id")
+    ):
+        return True
+
     return False
 
 

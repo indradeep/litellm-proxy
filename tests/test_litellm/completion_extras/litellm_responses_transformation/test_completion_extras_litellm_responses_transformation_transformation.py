@@ -2050,6 +2050,60 @@ def test_multi_tool_call_stream_no_premature_finish():
 
 
 # =============================================================================
+# Tests for cursor /responses bridge: response id propagation in chat SSE
+# =============================================================================
+
+
+def test_response_created_chunk_includes_response_id_metadata():
+    from litellm.completion_extras.litellm_responses_transformation.transformation import (
+        OpenAiResponsesToChatCompletionStreamIterator,
+    )
+
+    chunk = {
+        "type": "response.created",
+        "response": {
+            "id": "resp_oca_abc123",
+            "created_at": 1718123456,
+            "model": "oca/gpt-5.5",
+        },
+    }
+    result = (
+        OpenAiResponsesToChatCompletionStreamIterator.translate_responses_chunk_to_openai_stream(
+            chunk
+        )
+    )
+    assert result.id == "resp_oca_abc123"
+    assert result.created == 1718123456
+    assert result.model == "oca/gpt-5.5"
+
+
+def test_response_completed_chunk_includes_response_id_metadata():
+    from litellm.completion_extras.litellm_responses_transformation.transformation import (
+        OpenAiResponsesToChatCompletionStreamIterator,
+    )
+
+    chunk = {
+        "type": "response.completed",
+        "response": {
+            "id": "resp_oca_xyz789",
+            "created_at": 1718123999,
+            "model": "oca/gpt-5.5",
+            "status": "completed",
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        },
+    }
+    result = (
+        OpenAiResponsesToChatCompletionStreamIterator.translate_responses_chunk_to_openai_stream(
+            chunk
+        )
+    )
+    assert result.id == "resp_oca_xyz789"
+    assert result.created == 1718123999
+    assert result.model == "oca/gpt-5.5"
+    assert result.choices[0].finish_reason == "stop"
+
+
+# =============================================================================
 # Tests for issue #21331: Parallel tool call indices in streaming
 # =============================================================================
 

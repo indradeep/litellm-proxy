@@ -8332,6 +8332,7 @@ class ProviderConfigManager:
             LlmProviders.GRADIENT_AI: (lambda: litellm.GradientAIConfig(), False),
             LlmProviders.NSCALE: (lambda: litellm.NscaleConfig(), False),
             LlmProviders.HEROKU: (lambda: litellm.HerokuChatConfig(), False),
+            LlmProviders.OCA: (lambda: litellm.OCAChatConfig(), False),
             LlmProviders.OCI: (lambda: litellm.OCIChatConfig(), False),
             LlmProviders.HYPERBOLIC: (lambda: litellm.HyperbolicChatConfig(), False),
             LlmProviders.OVHCLOUD: (lambda: litellm.OVHCloudChatConfig(), False),
@@ -8807,6 +8808,8 @@ class ProviderConfigManager:
             return litellm.ManusResponsesAPIConfig()
         elif litellm.LlmProviders.PERPLEXITY == provider:
             return litellm.PerplexityResponsesConfig()
+        elif litellm.LlmProviders.OCA == provider:
+            return litellm.OCAResponsesAPIConfig()
         elif litellm.LlmProviders.DATABRICKS == provider:
             # Databricks Responses API is only compatible with OpenAI GPT models
             if model and "gpt" in model.lower():

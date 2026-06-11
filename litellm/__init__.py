@@ -1929,6 +1929,13 @@ if TYPE_CHECKING:
         DockerModelRunnerChatConfig as DockerModelRunnerChatConfig,
     )
     from .llms.v0.chat.transformation import V0ChatConfig as V0ChatConfig
+    from .llms.oca.chat.transformation import OCAChatConfig as OCAChatConfig
+    from .llms.oca.responses.transformation import (
+        OCAResponsesAPIConfig as OCAResponsesAPIConfig,
+    )
+    from .llms.oca.common_utils import register_oca_upstream_model_costs
+
+    register_oca_upstream_model_costs()
     from .llms.oci.chat.transformation import OCIChatConfig as OCIChatConfig
     from .llms.oci.embed.transformation import OCIEmbeddingConfig as OCIEmbeddingConfig
     from .llms.morph.chat.transformation import MorphChatConfig as MorphChatConfig
