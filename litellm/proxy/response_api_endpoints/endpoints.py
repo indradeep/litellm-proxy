@@ -29,6 +29,22 @@ def _resolve_responses_logging_target(responses_iterator: Any) -> Any:
     return source if source is not None else responses_iterator
 
 
+def _normalize_cursor_extra_model(data: Dict[str, Any]) -> None:
+    """Rewrite Cursor's extra-high model tier before downstream routing."""
+    model = data.get("model")
+    if not isinstance(model, str) or not model.endswith("-extra"):
+        return
+
+    data["model"] = model[: -len("-extra")]
+
+    reasoning = data.get("reasoning")
+    if not isinstance(reasoning, dict):
+        reasoning = {}
+        data["reasoning"] = reasoning
+
+    reasoning["effort"] = "xhigh"
+
+
 async def _cursor_sse_with_responses_logging(
     stream: AsyncIterator[str],
     responses_iterator: Any,
@@ -384,6 +400,7 @@ async def cursor_chat_completions(
     # Cursor sends 'messages' but Responses API expects 'input'
     if "messages" in data and "input" not in data:
         data["input"] = data.pop("messages")
+    _normalize_cursor_extra_model(data)
 
     processor = ProxyBaseLLMRequestProcessing(data=data)
 
