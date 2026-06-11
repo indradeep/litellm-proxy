@@ -323,7 +323,7 @@ def get_logging_payload(  # noqa: PLR0915
         elif sl_model_group:
             _model_group = sl_model_group
     # When router aliases map gpt-5.5 -> oca/gpt-5.5, prefer the client model.
-    if isinstance(_model_group, str) and "/" in _model_group:
+    if isinstance(_model_group, str) and _model_group.startswith("oca/"):
         proxy_body = (litellm_params.get("proxy_server_request") or {}).get("body")
         if isinstance(proxy_body, dict):
             client_model = proxy_body.get("model")

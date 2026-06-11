@@ -5098,7 +5098,15 @@ class StandardLoggingPayloadSetup:
             providers_to_try: List[Optional[str]] = []
             if custom_llm_provider:
                 providers_to_try.append(custom_llm_provider)
-            if "oca" not in providers_to_try:
+            if (
+                "oca" not in providers_to_try
+                and isinstance(model_cost_name, str)
+                and (
+                    model_cost_name.startswith("openai.gpt-5.")
+                    or model_cost_name.startswith("oca/")
+                    or model_cost_name.startswith("gpt-5.")
+                )
+            ):
                 providers_to_try.append("oca")
             providers_to_try.append(None)
             for provider in providers_to_try:

@@ -1933,9 +1933,6 @@ if TYPE_CHECKING:
     from .llms.oca.responses.transformation import (
         OCAResponsesAPIConfig as OCAResponsesAPIConfig,
     )
-    from .llms.oca.common_utils import register_oca_upstream_model_costs
-
-    register_oca_upstream_model_costs()
     from .llms.oci.chat.transformation import OCIChatConfig as OCIChatConfig
     from .llms.oci.embed.transformation import OCIEmbeddingConfig as OCIEmbeddingConfig
     from .llms.morph.chat.transformation import MorphChatConfig as MorphChatConfig

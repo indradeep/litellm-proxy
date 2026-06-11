@@ -308,7 +308,6 @@ LLM_CONFIG_NAMES = (
     "DockerModelRunnerChatConfig",
     "V0ChatConfig",
     "OCAChatConfig",
-    "OCAResponsesAPIConfig",
     "OCIChatConfig",
     "OCIEmbeddingConfig",
     "MorphChatConfig",
@@ -1159,10 +1158,6 @@ _LLM_CONFIGS_IMPORT_MAP = {
     ),
     "V0ChatConfig": (".llms.v0.chat.transformation", "V0ChatConfig"),
     "OCAChatConfig": (".llms.oca.chat.transformation", "OCAChatConfig"),
-    "OCAResponsesAPIConfig": (
-        ".llms.oca.responses.transformation",
-        "OCAResponsesAPIConfig",
-    ),
     "OCIChatConfig": (".llms.oci.chat.transformation", "OCIChatConfig"),
     "OCIEmbeddingConfig": (".llms.oci.embed.transformation", "OCIEmbeddingConfig"),
     "MorphChatConfig": (".llms.morph.chat.transformation", "MorphChatConfig"),

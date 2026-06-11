@@ -12,7 +12,6 @@ import httpx
 from openai._streaming import SSEDecoder
 
 import litellm
-from litellm._logging import verbose_logger
 from litellm.constants import (
     LITELLM_MAX_STREAMING_DURATION_SECONDS,
     STREAM_SSE_DONE_STRING,
@@ -294,21 +293,8 @@ class BaseResponsesAPIStreamingIterator:
 
     def _log_completed_response(self, *, is_async: bool) -> None:
         if self._completed_response_logged:
-            verbose_logger.debug(
-                "Responses stream: skip duplicate spend log model=%s call_type=%s",
-                self.model,
-                self.call_type,
-            )
             return
         self._completed_response_logged = True
-        verbose_logger.debug(
-            "Responses stream: scheduling spend log model=%s provider=%s "
-            "call_type=%s has_completed_response=%s",
-            self.model,
-            self.custom_llm_provider,
-            self.call_type,
-            self.completed_response is not None,
-        )
 
         if self._persist_completed_response_before_logging:
             self._persist_completed_response_to_cache(is_async=is_async)

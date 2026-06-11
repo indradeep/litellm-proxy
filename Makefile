@@ -212,7 +212,6 @@ ai-check:
 	@echo "→ litellm source:"
 	@$(AI_VENV_PY) -c "import litellm; print('   ', litellm.__file__)"
 	@$(AI_VENV_PY) -c "from litellm.llms.oci.embed.transformation import OCIEmbedConfig; print('  OCIEmbedConfig: ✅')" 2>/dev/null || echo "  OCIEmbedConfig: ❌ MISSING – run: make ai-sync"
-	@$(AI_VENV_PY) -c "from litellm.llms.oca.chat.transformation import OCAChatConfig; print('  OCAChatConfig: ✅')" 2>/dev/null || echo "  OCAChatConfig: ❌ MISSING – run: make ai-sync"
 	@$(AI_VENV_PY) -c "from litellm.llms.anthropic.experimental_pass_through.utils import build_openai_reasoning_param; print('  Anthropic passthrough utils: ✅')" 2>/dev/null || echo "  Anthropic passthrough utils: ❌ MISSING – run: make ai-sync"
 
 ## Restart the litellm-proxy launchd service.
@@ -229,11 +228,5 @@ ai-verify:
 	@curl -s -X POST $(AI_PROXY_URL)/v1/chat/completions \
 	  -H "Content-Type: application/json" -H "Authorization: Bearer $(AI_KEY)" \
 	  -d '{"model":"oci/gpt-5.4","messages":[{"role":"user","content":"Say OK"}],"max_tokens":5,"stream":true}' \
-	  | head -c 150
-	@echo ""
-	@echo "→ oca/gpt-5.4-mini chat:"
-	@curl -s -X POST $(AI_PROXY_URL)/v1/chat/completions \
-	  -H "Content-Type: application/json" -H "Authorization: Bearer $(AI_KEY)" \
-	  -d '{"model":"oca/gpt-5.4-mini","messages":[{"role":"user","content":"Say OK"}],"max_tokens":5,"stream":true}' \
 	  | head -c 150
 	@echo ""
