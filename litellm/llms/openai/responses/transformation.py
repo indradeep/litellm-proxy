@@ -32,20 +32,65 @@ else:
 class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
     @staticmethod
     def _extract_json_from_sse_payload(payload: str) -> Optional[Dict[str, Any]]:
-        for raw_line in payload.splitlines():
-            line = raw_line.strip()
-            if not line.startswith("data:"):
-                continue
-            data = line[5:].strip()
+        completed_response: Optional[Dict[str, Any]] = None
+        last_response: Optional[Dict[str, Any]] = None
+        last_json_payload: Optional[Dict[str, Any]] = None
+        current_event: Optional[str] = None
+        data_lines: list[str] = []
+
+        def consume_event() -> None:
+            nonlocal completed_response, last_response, last_json_payload, data_lines
+
+            if not data_lines:
+                return
+
+            data = "\n".join(data_lines).strip()
+            data_lines = []
             if not data or data == "[DONE]":
-                continue
+                return
+
             try:
                 parsed = json.loads(data)
             except Exception:
+                return
+            if not isinstance(parsed, dict):
+                return
+
+            last_json_payload = parsed
+            event_type = parsed.get("type") or current_event
+            response = parsed.get("response")
+            if isinstance(response, dict):
+                last_response = response
+                if (
+                    event_type == "response.completed"
+                    or response.get("status") == "completed"
+                ):
+                    completed_response = response
+                return
+
+            if parsed.get("object") == "response":
+                last_response = parsed
+                if (
+                    event_type == "response.completed"
+                    or parsed.get("status") == "completed"
+                ):
+                    completed_response = parsed
+
+        for raw_line in payload.splitlines():
+            line = raw_line.strip()
+            if not line:
+                consume_event()
+                current_event = None
                 continue
-            if isinstance(parsed, dict):
-                return parsed
-        return None
+            if line.startswith("event:"):
+                current_event = line[6:].strip()
+                continue
+            if not line.startswith("data:"):
+                continue
+            data_lines.append(line[5:].strip())
+
+        consume_event()
+        return completed_response or last_response or last_json_payload
 
     @property
     def custom_llm_provider(self) -> LlmProviders:
