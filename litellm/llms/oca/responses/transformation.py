@@ -4,8 +4,7 @@ OCA (Oracle Code Assist) — Responses API Configuration.
 Extends OpenAIResponsesAPIConfig to handle:
 - In-process OAuth client_credentials bearer token authentication
 - OCA-specific custom headers
-- SSE streaming (OCA rejects non-streaming /responses; LiteLLM buffers SSE
-  when clients request stream=false)
+- SSE streaming (OCA rejects non-streaming /responses)
 """
 
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
@@ -34,6 +33,10 @@ else:
     LiteLLMLoggingObj = Any
 
 
+def _env_flag_enabled(value: Optional[str]) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class OCAResponsesAPIConfig(OpenAIResponsesAPIConfig):
     """Configuration for Oracle Code Assist (OCA) Responses API."""
 
@@ -44,6 +47,16 @@ class OCAResponsesAPIConfig(OpenAIResponsesAPIConfig):
     def requires_streaming_upstream(self, stream: Optional[bool]) -> bool:
         # OCA returns HTTP 400: "Non Streaming Request are not supported".
         return stream is not True
+
+    def should_buffer_streaming_upstream_response(
+        self,
+        stream: Optional[bool],
+    ) -> bool:
+        # Default to real streaming. This escape hatch exists only for clients
+        # that cannot consume streamed /responses events.
+        return stream is not True and _env_flag_enabled(
+            get_secret_str("OCA_BUFFER_RESPONSES_STREAM")
+        )
 
     def map_openai_params(
         self,

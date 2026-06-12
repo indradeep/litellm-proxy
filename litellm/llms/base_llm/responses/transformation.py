@@ -227,8 +227,15 @@ class BaseResponsesAPIConfig(ABC):
         return False
 
     def requires_streaming_upstream(self, stream: Optional[bool]) -> bool:
-        """Return True when the upstream API only supports SSE and non-streaming
-        client requests must be buffered from a streaming response."""
+        """Return True when the upstream API only supports SSE."""
+        return False
+
+    def should_buffer_streaming_upstream_response(
+        self,
+        stream: Optional[bool],
+    ) -> bool:
+        """Return True when a forced upstream stream should be collected before
+        returning a response to the client."""
         return False
 
     def supports_native_websocket(self) -> bool:

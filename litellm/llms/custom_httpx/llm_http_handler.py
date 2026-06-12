@@ -2285,8 +2285,17 @@ class BaseLLMHTTPHandler:
 
         # Check if streaming is requested
         stream = response_api_optional_request_params.get("stream", False)
+        stream_upstream = bool(
+            stream
+            or responses_api_provider_config.requires_streaming_upstream(stream)
+        )
         buffer_stream_to_response = (
-            responses_api_provider_config.requires_streaming_upstream(stream)
+            not stream
+            and stream_upstream
+            and
+            responses_api_provider_config.should_buffer_streaming_upstream_response(
+                stream
+            )
         )
 
         api_base = responses_api_provider_config.get_complete_url(
@@ -2306,7 +2315,7 @@ class BaseLLMHTTPHandler:
         if extra_body:
             data.update(extra_body)
 
-        if buffer_stream_to_response:
+        if stream_upstream:
             data["stream"] = True
 
         # Preserve the OpenAI-style request context (not sent to the provider) for streaming
@@ -2333,7 +2342,7 @@ class BaseLLMHTTPHandler:
         )
 
         try:
-            if stream or buffer_stream_to_response:
+            if stream_upstream:
                 # For streaming, use stream=True in the request
                 if fake_stream is True:
                     stream, data = self._prepare_fake_stream_request(
@@ -2444,8 +2453,17 @@ class BaseLLMHTTPHandler:
 
         # Check if streaming is requested
         stream = response_api_optional_request_params.get("stream", False)
+        stream_upstream = bool(
+            stream
+            or responses_api_provider_config.requires_streaming_upstream(stream)
+        )
         buffer_stream_to_response = (
-            responses_api_provider_config.requires_streaming_upstream(stream)
+            not stream
+            and stream_upstream
+            and
+            responses_api_provider_config.should_buffer_streaming_upstream_response(
+                stream
+            )
         )
 
         api_base = responses_api_provider_config.get_complete_url(
@@ -2465,7 +2483,7 @@ class BaseLLMHTTPHandler:
         if extra_body:
             data.update(extra_body)
 
-        if buffer_stream_to_response:
+        if stream_upstream:
             data["stream"] = True
 
         # Preserve the OpenAI-style request context (not sent to the provider) for streaming
@@ -2492,7 +2510,7 @@ class BaseLLMHTTPHandler:
         )
 
         try:
-            if stream or buffer_stream_to_response:
+            if stream_upstream:
                 # For streaming, we need to use stream=True in the request
                 if fake_stream is True:
                     stream, data = self._prepare_fake_stream_request(

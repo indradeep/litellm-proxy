@@ -13,6 +13,7 @@ sys.path.insert(
 import litellm
 from litellm.llms.base_llm.responses.transformation import BaseResponsesAPIConfig
 from litellm.llms.azure.responses.transformation import AzureOpenAIResponsesAPIConfig
+from litellm.llms.oca.responses.transformation import OCAResponsesAPIConfig
 from litellm.llms.openai.responses.transformation import OpenAIResponsesAPIConfig
 from litellm.types.llms.openai import (
     ImageGenerationPartialImageEvent,
@@ -1485,3 +1486,37 @@ class TestPhaseParameter:
         assert validated[0]["phase"] == "commentary"
         assert validated[1]["phase"] == "final_answer"
         assert "phase" not in validated[2]
+
+
+class TestOCAResponsesStreamingConfig:
+    def setup_method(self):
+        self.config = OCAResponsesAPIConfig()
+
+    def test_oca_requires_streaming_upstream_for_non_streaming_client(self):
+        assert self.config.requires_streaming_upstream(stream=False) is True
+        assert self.config.requires_streaming_upstream(stream=None) is True
+        assert self.config.requires_streaming_upstream(stream=True) is False
+
+    def test_oca_stream_buffering_defaults_off(self):
+        with patch(
+            "litellm.llms.oca.responses.transformation.get_secret_str",
+            return_value=None,
+        ):
+            assert (
+                self.config.should_buffer_streaming_upstream_response(stream=False)
+                is False
+            )
+
+    def test_oca_stream_buffering_is_explicit_non_streaming_opt_in(self):
+        with patch(
+            "litellm.llms.oca.responses.transformation.get_secret_str",
+            return_value="true",
+        ):
+            assert (
+                self.config.should_buffer_streaming_upstream_response(stream=False)
+                is True
+            )
+            assert (
+                self.config.should_buffer_streaming_upstream_response(stream=True)
+                is False
+            )
