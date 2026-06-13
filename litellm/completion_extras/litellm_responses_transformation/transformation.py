@@ -1176,6 +1176,112 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
         self, streaming_response, sync_stream: bool, json_mode: Optional[bool] = False
     ):
         super().__init__(streaming_response, sync_stream, json_mode)
+        # Tracks streamed tool-call argument bytes per Responses output_index so
+        # `.done` events can backfill when providers skip incremental deltas.
+        self._tool_args_streamed_by_output_index: Dict[int, str] = {}
+        # Maps Responses output_index -> chat-completions tool_calls[].index.
+        # Claude/xhigh responses interleave reasoning/message items before tools,
+        # so output_index=2 does not mean "second tool call".
+        self._tool_call_chat_index_by_output_index: Dict[int, int] = {}
+
+    @staticmethod
+    def _tool_call_output_index(parsed_chunk: dict) -> int:
+        try:
+            return int(parsed_chunk.get("output_index", 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _chat_tool_call_index(
+        chat_index_by_output_index: Dict[int, int],
+        output_index: int,
+        *,
+        assign: bool = True,
+    ) -> int:
+        if output_index in chat_index_by_output_index:
+            return chat_index_by_output_index[output_index]
+        if not assign:
+            return 0
+        chat_index = len(chat_index_by_output_index)
+        chat_index_by_output_index[output_index] = chat_index
+        return chat_index
+
+    @staticmethod
+    def _remaining_tool_args(
+        streamed_by_output_index: Dict[int, str],
+        output_index: int,
+        final_args: str,
+    ) -> str:
+        if not final_args:
+            return ""
+        streamed = streamed_by_output_index.get(output_index, "")
+        if not streamed:
+            return final_args
+        if final_args.startswith(streamed):
+            return final_args[len(streamed) :]
+        return ""
+
+    @staticmethod
+    def _record_tool_args_delta(
+        streamed_by_output_index: Dict[int, str],
+        output_index: int,
+        delta: str,
+    ) -> None:
+        if not delta:
+            return
+        streamed_by_output_index[output_index] = (
+            streamed_by_output_index.get(output_index, "") + delta
+        )
+
+    @staticmethod
+    def _noop_stream_chunk() -> "ModelResponseStream":
+        from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
+
+        return ModelResponseStream(
+            choices=[
+                StreamingChoices(
+                    index=0,
+                    delta=Delta(),
+                    finish_reason=None,
+                )
+            ]
+        )
+
+    @staticmethod
+    def _tool_args_delta_chunk(
+        chat_tool_index: int,
+        arguments: str,
+        *,
+        name: Optional[str] = None,
+        call_id: Optional[str] = None,
+    ) -> "ModelResponseStream":
+        from litellm.types.llms.openai import ChatCompletionToolCallFunctionChunk
+        from litellm.types.utils import (
+            ChatCompletionToolCallChunk,
+            Delta,
+            ModelResponseStream,
+            StreamingChoices,
+        )
+
+        function_chunk = ChatCompletionToolCallFunctionChunk(
+            name=name,
+            arguments=arguments,
+        )
+        tool_call_chunk = ChatCompletionToolCallChunk(
+            id=call_id,
+            index=chat_tool_index,
+            type="function",
+            function=function_chunk,
+        )
+        return ModelResponseStream(
+            choices=[
+                StreamingChoices(
+                    index=0,
+                    delta=Delta(tool_calls=[tool_call_chunk]),
+                    finish_reason=None,
+                )
+            ]
+        )
 
     def _handle_string_chunk(
         self, str_line: Union[str, "BaseModel"]
@@ -1217,6 +1323,8 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
     @staticmethod
     def translate_responses_chunk_to_openai_stream(  # noqa: PLR0915
         parsed_chunk: Union[dict, BaseModel],
+        tool_args_streamed: Optional[Dict[int, str]] = None,
+        tool_call_chat_index_by_output_index: Optional[Dict[int, int]] = None,
     ) -> "ModelResponseStream":
         """
         Translate a Responses API streaming chunk to OpenAI chat completion streaming format.
@@ -1245,6 +1353,11 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
             parsed_chunk = parsed_chunk.model_dump()
         if not isinstance(parsed_chunk, dict):
             raise ValueError(f"Chat provider: Invalid chunk type {type(parsed_chunk)}")
+
+        if tool_args_streamed is None:
+            tool_args_streamed = {}
+        if tool_call_chat_index_by_output_index is None:
+            tool_call_chat_index_by_output_index = {}
 
         # Handle different event types from responses API
         event_type = parsed_chunk.get("type")
@@ -1290,9 +1403,26 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
                         else {}
                     )
 
+                output_index = (
+                    OpenAiResponsesToChatCompletionStreamIterator._tool_call_output_index(
+                        parsed_chunk
+                    )
+                )
+                chat_tool_index = (
+                    OpenAiResponsesToChatCompletionStreamIterator._chat_tool_call_index(
+                        tool_call_chat_index_by_output_index,
+                        output_index,
+                    )
+                )
+                initial_arguments = output_item.get("arguments", "") or ""
+                OpenAiResponsesToChatCompletionStreamIterator._record_tool_args_delta(
+                    tool_args_streamed,
+                    output_index,
+                    initial_arguments,
+                )
                 function_chunk = ChatCompletionToolCallFunctionChunk(
                     name=output_item.get("name", None),
-                    arguments=parsed_chunk.get("arguments", ""),
+                    arguments=initial_arguments,
                 )
 
                 if provider_specific_fields:
@@ -1300,10 +1430,9 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
                         provider_specific_fields
                     )
 
-                tool_call_index = parsed_chunk.get("output_index", 0)
                 tool_call_chunk = ChatCompletionToolCallChunk(
                     id=output_item.get("call_id"),
-                    index=tool_call_index,
+                    index=chat_tool_index,
                     type="function",
                     function=function_chunk,
                 )
@@ -1322,14 +1451,28 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
                     ]
                 )
             elif output_item.get("type") == "custom_tool_call":
-                tool_call_index = parsed_chunk.get("output_index", 0)
+                output_index = (
+                    OpenAiResponsesToChatCompletionStreamIterator._tool_call_output_index(
+                        parsed_chunk
+                    )
+                )
+                chat_tool_index = (
+                    OpenAiResponsesToChatCompletionStreamIterator._chat_tool_call_index(
+                        tool_call_chat_index_by_output_index,
+                        output_index,
+                    )
+                )
+                initial_input = output_item.get("input", "") or ""
+                OpenAiResponsesToChatCompletionStreamIterator._record_tool_args_delta(
+                    tool_args_streamed, output_index, initial_input
+                )
                 tool_call_chunk = ChatCompletionToolCallChunk(
                     id=output_item.get("call_id"),
-                    index=tool_call_index,
+                    index=chat_tool_index,
                     type="function",
                     function=ChatCompletionToolCallFunctionChunk(
                         name=output_item.get("name"),
-                        arguments=output_item.get("input", "") or "",
+                        arguments=initial_input,
                     ),
                 )
                 return ModelResponseStream(
@@ -1343,66 +1486,103 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
                 )
         elif event_type == "response.function_call_arguments.delta":
             content_part: Optional[str] = parsed_chunk.get("delta", None)
+            output_index = (
+                OpenAiResponsesToChatCompletionStreamIterator._tool_call_output_index(
+                    parsed_chunk
+                )
+            )
+            chat_tool_index = (
+                OpenAiResponsesToChatCompletionStreamIterator._chat_tool_call_index(
+                    tool_call_chat_index_by_output_index,
+                    output_index,
+                )
+            )
             if content_part:
-                tool_call_index = parsed_chunk.get("output_index", 0)
-                return ModelResponseStream(
-                    choices=[
-                        StreamingChoices(
-                            index=0,
-                            delta=Delta(
-                                tool_calls=[
-                                    ChatCompletionToolCallChunk(
-                                        id=None,
-                                        index=tool_call_index,
-                                        type="function",
-                                        function=ChatCompletionToolCallFunctionChunk(
-                                            name=None, arguments=content_part
-                                        ),
-                                    )
-                                ]
-                            ),
-                            finish_reason=None,
-                        )
-                    ]
+                OpenAiResponsesToChatCompletionStreamIterator._record_tool_args_delta(
+                    tool_args_streamed, output_index, content_part
                 )
-            else:
-                raise ValueError(
-                    f"Chat provider: Invalid function argument delta {parsed_chunk}"
+                return OpenAiResponsesToChatCompletionStreamIterator._tool_args_delta_chunk(
+                    chat_tool_index,
+                    content_part,
                 )
+            # Some providers (e.g. CLIProxyAPI/Claude) emit empty argument deltas.
+            return OpenAiResponsesToChatCompletionStreamIterator._noop_stream_chunk()
+        elif event_type == "response.function_call_arguments.done":
+            output_index = (
+                OpenAiResponsesToChatCompletionStreamIterator._tool_call_output_index(
+                    parsed_chunk
+                )
+            )
+            chat_tool_index = (
+                OpenAiResponsesToChatCompletionStreamIterator._chat_tool_call_index(
+                    tool_call_chat_index_by_output_index,
+                    output_index,
+                )
+            )
+            final_args = parsed_chunk.get("arguments") or ""
+            remaining_args = (
+                OpenAiResponsesToChatCompletionStreamIterator._remaining_tool_args(
+                    tool_args_streamed, output_index, final_args
+                )
+            )
+            if remaining_args:
+                OpenAiResponsesToChatCompletionStreamIterator._record_tool_args_delta(
+                    tool_args_streamed, output_index, remaining_args
+                )
+                return OpenAiResponsesToChatCompletionStreamIterator._tool_args_delta_chunk(
+                    chat_tool_index,
+                    remaining_args,
+                )
+            return OpenAiResponsesToChatCompletionStreamIterator._noop_stream_chunk()
         elif event_type == "response.custom_tool_call_input.delta":
             content_part = parsed_chunk.get("delta", None)
-            if content_part:
-                tool_call_index = parsed_chunk.get("output_index", 0)
-                return ModelResponseStream(
-                    choices=[
-                        StreamingChoices(
-                            index=0,
-                            delta=Delta(
-                                tool_calls=[
-                                    ChatCompletionToolCallChunk(
-                                        id=None,
-                                        index=tool_call_index,
-                                        type="function",
-                                        function=ChatCompletionToolCallFunctionChunk(
-                                            name=None, arguments=content_part
-                                        ),
-                                    )
-                                ]
-                            ),
-                            finish_reason=None,
-                        )
-                    ]
+            output_index = (
+                OpenAiResponsesToChatCompletionStreamIterator._tool_call_output_index(
+                    parsed_chunk
                 )
-        elif event_type == "response.custom_tool_call_input.done":
-            return ModelResponseStream(
-                choices=[
-                    StreamingChoices(
-                        index=0,
-                        delta=Delta(),
-                        finish_reason=None,
-                    )
-                ]
             )
+            chat_tool_index = (
+                OpenAiResponsesToChatCompletionStreamIterator._chat_tool_call_index(
+                    tool_call_chat_index_by_output_index,
+                    output_index,
+                )
+            )
+            if content_part:
+                OpenAiResponsesToChatCompletionStreamIterator._record_tool_args_delta(
+                    tool_args_streamed, output_index, content_part
+                )
+                return OpenAiResponsesToChatCompletionStreamIterator._tool_args_delta_chunk(
+                    chat_tool_index,
+                    content_part,
+                )
+            return OpenAiResponsesToChatCompletionStreamIterator._noop_stream_chunk()
+        elif event_type == "response.custom_tool_call_input.done":
+            output_index = (
+                OpenAiResponsesToChatCompletionStreamIterator._tool_call_output_index(
+                    parsed_chunk
+                )
+            )
+            chat_tool_index = (
+                OpenAiResponsesToChatCompletionStreamIterator._chat_tool_call_index(
+                    tool_call_chat_index_by_output_index,
+                    output_index,
+                )
+            )
+            final_input = parsed_chunk.get("input") or ""
+            remaining_input = (
+                OpenAiResponsesToChatCompletionStreamIterator._remaining_tool_args(
+                    tool_args_streamed, output_index, final_input
+                )
+            )
+            if remaining_input:
+                OpenAiResponsesToChatCompletionStreamIterator._record_tool_args_delta(
+                    tool_args_streamed, output_index, remaining_input
+                )
+                return OpenAiResponsesToChatCompletionStreamIterator._tool_args_delta_chunk(
+                    chat_tool_index,
+                    remaining_input,
+                )
+            return OpenAiResponsesToChatCompletionStreamIterator._noop_stream_chunk()
         elif event_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
             # New output item added
             output_item = parsed_chunk.get("item", {})
@@ -1418,52 +1598,87 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
                         else {}
                     )
 
-                function_chunk = ChatCompletionToolCallFunctionChunk(
-                    name=output_item.get("name", None),
-                    arguments="",  # responses API sends everything again, we don't
-                )
-
-                # Add provider_specific_fields to function if present
-                if provider_specific_fields:
-                    function_chunk["provider_specific_fields"] = (
-                        provider_specific_fields
+                output_index = (
+                    OpenAiResponsesToChatCompletionStreamIterator._tool_call_output_index(
+                        parsed_chunk
                     )
-
-                tool_call_index = parsed_chunk.get("output_index", 0)
-                tool_call_chunk = ChatCompletionToolCallChunk(
-                    id=output_item.get("call_id"),
-                    index=tool_call_index,
-                    type="function",
-                    function=function_chunk,
                 )
-
-                # Add provider_specific_fields if present
-                if provider_specific_fields:
-                    tool_call_chunk.provider_specific_fields = provider_specific_fields  # type: ignore
+                chat_tool_index = (
+                    OpenAiResponsesToChatCompletionStreamIterator._chat_tool_call_index(
+                        tool_call_chat_index_by_output_index,
+                        output_index,
+                    )
+                )
+                final_args = output_item.get("arguments") or ""
+                remaining_args = (
+                    OpenAiResponsesToChatCompletionStreamIterator._remaining_tool_args(
+                        tool_args_streamed, output_index, final_args
+                    )
+                )
+                if remaining_args:
+                    OpenAiResponsesToChatCompletionStreamIterator._record_tool_args_delta(
+                        tool_args_streamed, output_index, remaining_args
+                    )
+                    function_chunk = ChatCompletionToolCallFunctionChunk(
+                        name=output_item.get("name", None),
+                        arguments=remaining_args,
+                    )
+                    if provider_specific_fields:
+                        function_chunk["provider_specific_fields"] = (
+                            provider_specific_fields
+                        )
+                    tool_call_chunk = ChatCompletionToolCallChunk(
+                        id=output_item.get("call_id"),
+                        index=chat_tool_index,
+                        type="function",
+                        function=function_chunk,
+                    )
+                    if provider_specific_fields:
+                        tool_call_chunk.provider_specific_fields = provider_specific_fields  # type: ignore
+                    return ModelResponseStream(
+                        choices=[
+                            StreamingChoices(
+                                index=0,
+                                delta=Delta(tool_calls=[tool_call_chunk]),
+                                finish_reason=None,
+                            )
+                        ]
+                    )
 
                 # Do NOT emit finish_reason here — response.completed handles the terminal
                 # finish_reason. Emitting "tool_calls" here would prematurely terminate
                 # the stream before subsequent tool calls arrive (same fix as #17246 for
                 # the message-type branch).
-                return ModelResponseStream(
-                    choices=[
-                        StreamingChoices(
-                            index=0,
-                            delta=Delta(),
-                            finish_reason=None,
-                        )
-                    ]
-                )
+                return OpenAiResponsesToChatCompletionStreamIterator._noop_stream_chunk()
             elif output_item.get("type") == "custom_tool_call":
-                return ModelResponseStream(
-                    choices=[
-                        StreamingChoices(
-                            index=0,
-                            delta=Delta(),
-                            finish_reason=None,
-                        )
-                    ]
+                output_index = (
+                    OpenAiResponsesToChatCompletionStreamIterator._tool_call_output_index(
+                        parsed_chunk
+                    )
                 )
+                chat_tool_index = (
+                    OpenAiResponsesToChatCompletionStreamIterator._chat_tool_call_index(
+                        tool_call_chat_index_by_output_index,
+                        output_index,
+                    )
+                )
+                final_input = output_item.get("input") or ""
+                remaining_input = (
+                    OpenAiResponsesToChatCompletionStreamIterator._remaining_tool_args(
+                        tool_args_streamed, output_index, final_input
+                    )
+                )
+                if remaining_input:
+                    OpenAiResponsesToChatCompletionStreamIterator._record_tool_args_delta(
+                        tool_args_streamed, output_index, remaining_input
+                    )
+                    return OpenAiResponsesToChatCompletionStreamIterator._tool_args_delta_chunk(
+                        chat_tool_index,
+                        remaining_input,
+                        name=output_item.get("name"),
+                        call_id=output_item.get("call_id"),
+                    )
+                return OpenAiResponsesToChatCompletionStreamIterator._noop_stream_chunk()
             elif output_item.get("type") == "message":
                 # Message completion should NOT emit finish_reason
                 # This is the fix for issue #17246 - don't end stream prematurely
@@ -1596,5 +1811,7 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
             f"Chat provider: transform_streaming_response called with chunk: {chunk}"
         )
         return OpenAiResponsesToChatCompletionStreamIterator.translate_responses_chunk_to_openai_stream(
-            chunk
+            chunk,
+            tool_args_streamed=self._tool_args_streamed_by_output_index,
+            tool_call_chat_index_by_output_index=self._tool_call_chat_index_by_output_index,
         )

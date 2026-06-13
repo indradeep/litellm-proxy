@@ -5098,16 +5098,21 @@ class StandardLoggingPayloadSetup:
             providers_to_try: List[Optional[str]] = []
             if custom_llm_provider:
                 providers_to_try.append(custom_llm_provider)
-            if (
-                "oca" not in providers_to_try
-                and isinstance(model_cost_name, str)
-                and (
-                    model_cost_name.startswith("openai.gpt-5.")
-                    or model_cost_name.startswith("oca/")
-                    or model_cost_name.startswith("gpt-5.")
-                )
-            ):
-                providers_to_try.append("oca")
+            # Derive the provider from a "provider/model" prefix (e.g.
+            # oca/gpt-5.5 -> oca) so aliased deployments resolve their cost entry.
+            if isinstance(model_cost_name, str) and "/" in model_cost_name:
+                prefix_provider = model_cost_name.split("/", 1)[0]
+                if prefix_provider and prefix_provider not in providers_to_try:
+                    providers_to_try.append(prefix_provider)
+            # Fall back to the provider recorded in the cost map for this model
+            # (covers upstream/short names registered by a provider, e.g. OCA's
+            # openai.gpt-5.5 / gpt-5.5 entries).
+            if isinstance(model_cost_name, str):
+                registered_provider = litellm.model_cost.get(
+                    model_cost_name, {}
+                ).get("litellm_provider")
+                if registered_provider and registered_provider not in providers_to_try:
+                    providers_to_try.append(registered_provider)
             providers_to_try.append(None)
             for provider in providers_to_try:
                 try:

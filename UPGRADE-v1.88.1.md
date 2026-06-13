@@ -45,7 +45,9 @@ git stash pop
 |---------------|---------------|-------|
 | Anthropic effort/display passthrough (`utils.py`, adapters) | **Yes** | Upstream added `output_config.effort` but not full `display: omitted/summarized` handling |
 | OCI embeddings | **No (upstream)** | v1.88.1 refactored `OCIOEmbedConfig` with shared `sign_oci_request` |
-| OCA provider | **Removed** | De-integrated from ai-infra; OCI GenAI covers production models |
+| OCA provider | **Restored** | Re-integrated with Cursor multi-turn + spend logging; see `PROVIDERS.md` |
+| Clip provider | **Yes** | JSON `openai_like` provider (local proxy :8317); see `PROVIDERS.md` |
+| Provider isolation | **Yes** | Shared Cursor/Responses layer is provider-agnostic; see `PROVIDERS.md` |
 | Makefile `ai-*` targets | **Yes** | Updated for OCI + passthrough checks (no OCA) |
 | UI `_experimental/out/` renames | **Dropped** | Local build artifacts; replaced by upstream v1.88.1 dashboard build |
 

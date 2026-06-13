@@ -114,5 +114,22 @@
     "param_mappings": {
       "max_completion_tokens": "max_tokens"
     }
+  },
+  "clip": {
+    "base_url": "http://127.0.0.1:8317/v1",
+    "api_key_env": "CLIP_API_KEY",
+    "api_base_env": "CLIP_API_BASE",
+    "base_class": "openai_gpt",
+    "supported_endpoints": [
+      "/v1/chat/completions",
+      "/v1/responses"
+    ],
+    "special_handling": {
+      "convert_content_list_to_string": true,
+      "responses_convert_anthropic_tool_blocks": true,
+      "responses_drop_unsupported_params": [
+        "metadata"
+      ]
+    }
   }
 }

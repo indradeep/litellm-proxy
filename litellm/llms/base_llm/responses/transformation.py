@@ -226,6 +226,21 @@ class BaseResponsesAPIConfig(ABC):
         """Returns True if litellm should fake a stream for the given model and stream value"""
         return False
 
+    async def async_prepare_responses_api_request(
+        self,
+        *,
+        input: Any,
+        response_api_optional_request_params: dict,
+        litellm_params: Any,
+    ) -> Tuple[Any, dict]:
+        """Provider hook to rewrite input/params before the request is sent.
+
+        Default is a no-op. Providers (e.g. OCA Zero Data Retention) override
+        this to rebuild input or strip unsupported params. Kept async because
+        some providers need to fetch prior turns from the session store.
+        """
+        return input, response_api_optional_request_params
+
     def requires_streaming_upstream(self, stream: Optional[bool]) -> bool:
         """Return True when the upstream API only supports SSE."""
         return False

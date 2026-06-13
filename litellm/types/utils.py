@@ -3235,6 +3235,7 @@ class LlmProviders(str, Enum):
     OPENAI = "openai"
     CHATGPT = "chatgpt"
     OPENAI_LIKE = "openai_like"  # embedding only
+    CLIP = "clip"
     JINA_AI = "jina_ai"
     XAI = "xai"
     ZAI = "zai"

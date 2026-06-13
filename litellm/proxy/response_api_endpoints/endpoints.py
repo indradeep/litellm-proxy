@@ -29,6 +29,29 @@ def _resolve_responses_logging_target(responses_iterator: Any) -> Any:
     return source if source is not None else responses_iterator
 
 
+def _is_empty_cursor_payload(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    if isinstance(value, (list, tuple, dict)):
+        return len(value) == 0
+    return False
+
+
+def _normalize_cursor_request_input(data: Dict[str, Any]) -> None:
+    """Normalize Cursor request fields into Responses API `input`."""
+    messages = data.pop("messages", None)
+    input_val = data.get("input")
+
+    if _is_empty_cursor_payload(input_val) and messages is not None:
+        data["input"] = messages
+        input_val = data["input"]
+
+    if isinstance(input_val, str) and input_val.strip():
+        data["input"] = [{"role": "user", "content": input_val}]
+
+
 def _normalize_cursor_extra_model(data: Dict[str, Any]) -> None:
     """Rewrite Cursor's extra-high model tier before downstream routing."""
     model = data.get("model")
@@ -396,10 +419,8 @@ async def cursor_chat_completions(
 
     data = await _read_request_body(request=request)
 
-    # Convert 'messages' to 'input' for Responses API compatibility
-    # Cursor sends 'messages' but Responses API expects 'input'
-    if "messages" in data and "input" not in data:
-        data["input"] = data.pop("messages")
+    # Cursor may send both `messages` and an empty `input`; prefer non-empty content.
+    _normalize_cursor_request_input(data)
     _normalize_cursor_extra_model(data)
 
     processor = ProxyBaseLLMRequestProcessing(data=data)

@@ -25,6 +25,9 @@ from litellm.completion_extras.litellm_responses_transformation.transformation i
 )
 from litellm.constants import request_timeout
 from litellm.litellm_core_utils.asyncify import run_async_function
+from litellm.litellm_core_utils.core_helpers import (
+    get_litellm_metadata_from_kwargs,
+)
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.prompt_templates.common_utils import (
     update_responses_input_with_model_file_ids,
@@ -1143,11 +1146,9 @@ def responses(
                 "data_residency": infer_openai_data_residency(
                     custom_llm_provider, litellm_params.api_base
                 ),
-                "metadata": (
-                    kwargs["litellm_metadata"]
-                    if "litellm_metadata" in kwargs
-                    else kwargs.get("metadata")
-                ),
+                # Merge proxy auth metadata (often on `metadata` for /cursor/*)
+                # with router routing metadata (on `litellm_metadata`).
+                "metadata": get_litellm_metadata_from_kwargs(kwargs),
             },
             custom_llm_provider=custom_llm_provider,
         )
@@ -1157,21 +1158,14 @@ def responses(
             input
         )
 
-        # OCA Zero Data Retention: rebuild full input and drop previous_response_id.
-        from litellm.llms.oca.common_utils import (
-            is_oca_request,
-            prepare_oca_zdr_responses_request,
+        # Provider hook: rewrite input/params before sending (e.g. OCA Zero Data
+        # Retention rebuilds full input and drops previous_response_id).
+        input, responses_api_request_params = run_async_function(
+            responses_api_provider_config.async_prepare_responses_api_request,
+            input=input,
+            response_api_optional_request_params=responses_api_request_params,
+            litellm_params=litellm_params,
         )
-        from litellm.types.utils import LlmProviders
-
-        if custom_llm_provider == LlmProviders.OCA.value or is_oca_request(
-            model=model, api_base=litellm_params.api_base
-        ):
-            input, responses_api_request_params = run_async_function(
-                prepare_oca_zdr_responses_request,
-                input=input,
-                response_api_optional_params=responses_api_request_params,
-            )
 
         # Call the handler with _is_async flag instead of directly calling the async handler
         if custom_llm_provider is None:

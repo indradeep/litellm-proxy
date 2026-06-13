@@ -44,6 +44,21 @@ class OCAResponsesAPIConfig(OpenAIResponsesAPIConfig):
     def custom_llm_provider(self) -> LlmProviders:
         return LlmProviders.OCA
 
+    async def async_prepare_responses_api_request(
+        self,
+        *,
+        input: Any,
+        response_api_optional_request_params: Dict,
+        litellm_params: Any,
+    ):
+        # OCA Zero Data Retention: rebuild full input and drop previous_response_id.
+        from ..common_utils import prepare_oca_zdr_responses_request
+
+        return await prepare_oca_zdr_responses_request(
+            input=input,
+            response_api_optional_params=response_api_optional_request_params,
+        )
+
     def requires_streaming_upstream(self, stream: Optional[bool]) -> bool:
         # OCA returns HTTP 400: "Non Streaming Request are not supported".
         return stream is not True
