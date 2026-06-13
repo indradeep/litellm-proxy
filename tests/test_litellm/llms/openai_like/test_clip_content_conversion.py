@@ -139,3 +139,57 @@ def test_clip_responses_transform_converts_anthropic_tool_history():
 
     assert request["input"][-2]["type"] == "function_call"
     assert request["input"][-1]["type"] == "function_call_output"
+
+
+def test_responses_api_response_accepts_chat_style_usage():
+    """clip emits chat-style usage on response.completed; parsing must not raise.
+
+    Forcing ResponseAPIUsage(**value) on a chat-style usage dict previously
+    raised a ValidationError (missing input_tokens/output_tokens), surfacing as
+    a MidStreamFallbackError mid-stream.
+    """
+    from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
+
+    response = ResponsesAPIResponse(
+        id="resp_clip",
+        object="response",
+        created_at=1,
+        status="completed",
+        model="clip/claude-opus-4-8",
+        output=[],
+        usage={
+            "prompt_tokens": 182240,
+            "completion_tokens": 166,
+            "total_tokens": 182406,
+            "completion_tokens_details": {
+                "reasoning_tokens": 0,
+                "text_tokens": 166,
+            },
+            "prompt_tokens_details": {"cached_tokens": 179585},
+        },
+    )
+
+    assert isinstance(response.usage, ResponseAPIUsage)
+    assert response.usage.input_tokens == 182240
+    assert response.usage.output_tokens == 166
+    assert response.usage.total_tokens == 182406
+
+
+def test_responses_api_response_preserves_response_style_usage():
+    """Standard Responses-style usage must continue to parse unchanged."""
+    from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
+
+    response = ResponsesAPIResponse(
+        id="resp_std",
+        object="response",
+        created_at=1,
+        status="completed",
+        model="oca/gpt-5.5",
+        output=[],
+        usage={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+    )
+
+    assert isinstance(response.usage, ResponseAPIUsage)
+    assert response.usage.input_tokens == 10
+    assert response.usage.output_tokens == 5
+    assert response.usage.total_tokens == 15

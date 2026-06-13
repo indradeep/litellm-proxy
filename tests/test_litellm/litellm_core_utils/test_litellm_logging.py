@@ -2181,6 +2181,75 @@ def test_get_assembled_streaming_response_returns_none_for_non_streaming_text_co
     assert assembled is None
 
 
+def test_get_assembled_streaming_response_handles_dict_response_usage():
+    """Completed events whose ``response`` is a plain dict must not crash.
+
+    Some OpenAI-compatible providers (e.g. buffered SSE) hand back a dict
+    instead of a ResponsesAPIResponse; the usage transform must still run.
+    """
+    import datetime
+
+    from litellm.types.llms.openai import (
+        ResponseCompletedEvent,
+        ResponsesAPIStreamEvents,
+    )
+
+    logging_obj = _make_logging_obj(stream=True)
+    event = ResponseCompletedEvent.model_construct(
+        type=ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
+        response={
+            "id": "resp_dict",
+            "object": "response",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+            },
+        },
+    )
+    assembled = logging_obj._get_assembled_streaming_response(
+        result=event,
+        start_time=datetime.datetime.now(),
+        end_time=datetime.datetime.now(),
+        is_async=True,
+        streaming_chunks=[],
+    )
+    assert assembled["usage"]["prompt_tokens"] == 10
+    assert assembled["usage"]["completion_tokens"] == 5
+    assert assembled["usage"]["total_tokens"] == 15
+
+
+def test_get_assembled_streaming_response_handles_object_response_usage():
+    """Completed events with a ResponsesAPIResponse object still transform usage."""
+    import datetime
+
+    from litellm.types.llms.openai import (
+        ResponseAPIUsage,
+        ResponseCompletedEvent,
+        ResponsesAPIResponse,
+        ResponsesAPIStreamEvents,
+    )
+
+    logging_obj = _make_logging_obj(stream=True)
+    response = ResponsesAPIResponse.model_construct(
+        id="resp_obj",
+        usage=ResponseAPIUsage(input_tokens=3, output_tokens=4, total_tokens=7),
+    )
+    event = ResponseCompletedEvent.model_construct(
+        type=ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
+        response=response,
+    )
+    assembled = logging_obj._get_assembled_streaming_response(
+        result=event,
+        start_time=datetime.datetime.now(),
+        end_time=datetime.datetime.now(),
+        is_async=True,
+        streaming_chunks=[],
+    )
+    assert assembled.usage["prompt_tokens"] == 3
+    assert assembled.usage["completion_tokens"] == 4
+
+
 @pytest.mark.asyncio
 async def test_non_streaming_computes_standard_logging_object_once():
     """

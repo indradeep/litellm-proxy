@@ -3483,23 +3483,35 @@ class Logging(LiteLLMLoggingBaseClass):
             (ResponseCompletedEvent, ResponseIncompleteEvent, ResponseFailedEvent),
         ):
             ## return unified Usage object
-            if isinstance(result.response.usage, ResponseAPIUsage):
+            # ``response`` is typed as ResponsesAPIResponse but some providers
+            # (e.g. buffered OpenAI-compatible SSE) hand back a plain dict.
+            response_obj = result.response
+            if isinstance(response_obj, dict):
+                response_usage = response_obj.get("usage")
+            else:
+                response_usage = getattr(response_obj, "usage", None)
+            if isinstance(
+                response_usage, ResponseAPIUsage
+            ) or (
+                isinstance(response_usage, dict)
+                and ResponseAPILoggingUtils._is_response_api_usage(response_usage)
+            ):
                 transformed_usage = (
                     ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(
-                        result.response.usage
+                        response_usage
                     )
                 )
                 # Set as dict instead of Usage object so model_dump() serializes it correctly
-                setattr(
-                    result.response,
-                    "usage",
-                    (
-                        transformed_usage.model_dump()
-                        if hasattr(transformed_usage, "model_dump")
-                        else dict(transformed_usage)
-                    ),
+                normalized_usage = (
+                    transformed_usage.model_dump()
+                    if hasattr(transformed_usage, "model_dump")
+                    else dict(transformed_usage)
                 )
-            return result.response
+                if isinstance(response_obj, dict):
+                    response_obj["usage"] = normalized_usage
+                else:
+                    setattr(response_obj, "usage", normalized_usage)
+            return response_obj
         else:
             return None
 

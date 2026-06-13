@@ -1068,6 +1068,19 @@ class ResponseAPILoggingUtils:
             )
         response_api_usage: ResponseAPIUsage
         if isinstance(usage_input, dict):
+            # Some OpenAI-compatible providers (e.g. clip) emit chat-style usage
+            # (prompt_tokens/completion_tokens) on Responses events. Pass it
+            # through as a chat Usage instead of forcing ResponseAPIUsage, which
+            # requires input_tokens/output_tokens and would raise ValidationError.
+            has_response_api_shape = (
+                "input_tokens" in usage_input or "output_tokens" in usage_input
+            )
+            has_chat_shape = (
+                "prompt_tokens" in usage_input or "completion_tokens" in usage_input
+            )
+            if has_chat_shape and not has_response_api_shape:
+                return Usage(**usage_input)
+
             total_tokens = usage_input.get("total_tokens")
             if total_tokens is None:
                 input_tokens = usage_input.get("input_tokens")

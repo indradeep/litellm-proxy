@@ -220,6 +220,48 @@ class TestResponseAPILoggingUtils:
             and result.prompt_tokens_details.cached_tokens == 2
         )
 
+    def test_transform_chat_style_usage_passes_through(self):
+        """Chat-style usage (prompt_tokens/completion_tokens) must not raise.
+
+        Some OpenAI-compatible providers (e.g. clip) emit chat-style usage on
+        Responses `response.completed` events. Forcing ResponseAPIUsage would
+        raise a ValidationError (missing input_tokens/output_tokens).
+        """
+        # Setup — mirrors a clip provider completed-event usage payload
+        usage = {
+            "prompt_tokens": 182240,
+            "completion_tokens": 166,
+            "total_tokens": 182406,
+            "completion_tokens_details": {
+                "reasoning_tokens": 0,
+                "text_tokens": 166,
+                "image_tokens": None,
+                "video_tokens": None,
+            },
+            "prompt_tokens_details": {
+                "cached_tokens": 179585,
+                "text_tokens": None,
+                "image_tokens": None,
+                "audio_tokens": None,
+                "video_tokens": None,
+            },
+        }
+
+        # Execute
+        result = ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(
+            usage
+        )
+
+        # Assert
+        assert isinstance(result, Usage)
+        assert result.prompt_tokens == 182240
+        assert result.completion_tokens == 166
+        assert result.total_tokens == 182406
+        assert (
+            result.prompt_tokens_details
+            and result.prompt_tokens_details.cached_tokens == 179585
+        )
+
     def test_transform_response_api_usage_with_none_values(self):
         """Test transformation handles None values properly"""
         # Setup

@@ -1307,10 +1307,32 @@ class ResponsesAPIResponse(BaseLiteLLMOpenAIResponseObject):
     @field_validator("usage", mode="before")
     @classmethod
     def validate_usage(cls, value):
-        """Convert usage dict to ResponseAPIUsage object if needed"""
+        """Convert usage dict to ResponseAPIUsage object if needed.
+
+        Some OpenAI-compatible providers (e.g. clip) return chat-style usage
+        (prompt_tokens/completion_tokens) on Responses events. Map those to the
+        Responses-style input_tokens/output_tokens so ResponseAPIUsage (which
+        requires those fields) does not raise a ValidationError.
+        """
         if value is None:
             return value
         if isinstance(value, dict):
+            has_response_api_shape = (
+                "input_tokens" in value or "output_tokens" in value
+            )
+            has_chat_shape = (
+                "prompt_tokens" in value or "completion_tokens" in value
+            )
+            if has_chat_shape and not has_response_api_shape:
+                value = dict(value)
+                input_tokens = value.pop("prompt_tokens", 0) or 0
+                output_tokens = value.pop("completion_tokens", 0) or 0
+                value.setdefault("input_tokens", input_tokens)
+                value.setdefault("output_tokens", output_tokens)
+                value.setdefault(
+                    "total_tokens",
+                    value.get("total_tokens") or input_tokens + output_tokens,
+                )
             return ResponseAPIUsage(**value)
         return value
 
