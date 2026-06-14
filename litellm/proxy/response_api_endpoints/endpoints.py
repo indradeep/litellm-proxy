@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import time
 from typing import Any, AsyncIterator, Dict, Optional, cast
 from uuid import uuid4
@@ -17,10 +18,20 @@ from litellm.proxy.auth.user_api_key_auth import (
     user_api_key_auth_websocket,
 )
 from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
+from litellm.proxy.response_api_endpoints.cursor_session import (
+    CursorSessionDecision,
+    CursorSessionStore,
+)
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
 from litellm.types.responses.main import DeleteResponseResult
 
 router = APIRouter()
+_cursor_session_store = CursorSessionStore(
+    max_entries=int(os.getenv("CURSOR_SESSION_MAX_ENTRIES", "256")),
+    ttl_seconds=int(os.getenv("CURSOR_SESSION_TTL_SECONDS", "7200")),
+    min_estimated_tokens=int(os.getenv("CURSOR_COMPACTION_MIN_EST_TOKENS", "60000")),
+    raw_tail_messages=int(os.getenv("CURSOR_COMPACTION_RAW_TAIL_MESSAGES", "12")),
+)
 
 
 def _resolve_responses_logging_target(responses_iterator: Any) -> Any:
@@ -71,6 +82,7 @@ def _normalize_cursor_extra_model(data: Dict[str, Any]) -> None:
 async def _cursor_sse_with_responses_logging(
     stream: AsyncIterator[str],
     responses_iterator: Any,
+    cursor_session_decision: Optional[CursorSessionDecision] = None,
 ) -> AsyncIterator[str]:
     """Ensure Responses API success logging runs after the cursor SSE stream ends."""
     logging_target = _resolve_responses_logging_target(responses_iterator)
@@ -102,6 +114,100 @@ async def _cursor_sse_with_responses_logging(
                 getattr(logging_target, "model", None),
             )
             logging_target._handle_logging_completed_response()
+        if cursor_session_decision is not None and completed is not None:
+            _record_cursor_session_response(
+                cursor_session_decision=cursor_session_decision,
+                response_obj=completed,
+            )
+
+
+def _get_cursor_request_headers(request: Request) -> Dict[str, str]:
+    return {key.lower(): value for key, value in request.headers.items()}
+
+
+def _get_cursor_user_api_key_hash(user_api_key_dict: UserAPIKeyAuth) -> Optional[str]:
+    api_key_hash = getattr(user_api_key_dict, "api_key", None)
+    if isinstance(api_key_hash, str) and api_key_hash.strip():
+        return api_key_hash
+    token_hash = getattr(user_api_key_dict, "token", None)
+    if isinstance(token_hash, str) and token_hash.strip():
+        return token_hash
+    return None
+
+
+def _annotate_cursor_session_metadata(
+    data: Dict[str, Any],
+    decision: CursorSessionDecision,
+) -> None:
+    metadata = data.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        data["metadata"] = metadata
+    metadata["cursor_session_status"] = decision.status
+    metadata["cursor_session_key_source"] = decision.session_key_source
+    metadata["cursor_input_mode"] = decision.input_mode
+    metadata["cursor_estimated_tokens_before"] = decision.estimated_tokens_before
+    metadata["cursor_estimated_tokens_after"] = decision.estimated_tokens_after
+
+
+def _read_response_attr(value: Any, key: str) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value.get(key)
+    if hasattr(value, key):
+        return getattr(value, key)
+    try:
+        return value[key]
+    except Exception:
+        return None
+
+
+def _extract_text_from_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts = []
+        for part in content:
+            if isinstance(part, str):
+                text_parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text") or part.get("content")
+                if isinstance(text, str):
+                    text_parts.append(text)
+            else:
+                text = _read_response_attr(part, "text")
+                if isinstance(text, str):
+                    text_parts.append(text)
+        return "".join(text_parts)
+    return ""
+
+
+def _extract_cursor_response_text(response_obj: Any) -> str:
+    response = _read_response_attr(response_obj, "response") or response_obj
+    output = _read_response_attr(response, "output")
+    if not isinstance(output, list):
+        return ""
+    text_parts = []
+    for item in output:
+        role = _read_response_attr(item, "role")
+        item_type = _read_response_attr(item, "type")
+        if role not in (None, "assistant") and item_type != "message":
+            continue
+        content = _read_response_attr(item, "content")
+        text_parts.append(_extract_text_from_content(content))
+    return "".join(text_parts).strip()
+
+
+def _record_cursor_session_response(
+    *,
+    cursor_session_decision: CursorSessionDecision,
+    response_obj: Any,
+) -> None:
+    _cursor_session_store.record_response(
+        cursor_session_decision,
+        assistant_text=_extract_cursor_response_text(response_obj),
+    )
 
 
 @router.post(
@@ -422,6 +528,12 @@ async def cursor_chat_completions(
     # Cursor may send both `messages` and an empty `input`; prefer non-empty content.
     _normalize_cursor_request_input(data)
     _normalize_cursor_extra_model(data)
+    cursor_session_decision = _cursor_session_store.prepare_request(
+        data,
+        headers=_get_cursor_request_headers(request),
+        user_api_key_hash=_get_cursor_user_api_key_hash(user_api_key_dict),
+    )
+    _annotate_cursor_session_metadata(data, cursor_session_decision)
 
     processor = ProxyBaseLLMRequestProcessing(data=data)
 
@@ -469,6 +581,7 @@ async def cursor_chat_completions(
             return _cursor_sse_with_responses_logging(
                 stream=sse_stream,
                 responses_iterator=response,
+                cursor_session_decision=cursor_session_decision,
             )
         # Otherwise, use the default generator
         return async_data_generator(
@@ -499,6 +612,10 @@ async def cursor_chat_completions(
 
         # Transform non-streaming Responses API response to chat completions format
         if isinstance(response, ResponsesAPIResponse):
+            _record_cursor_session_response(
+                cursor_session_decision=cursor_session_decision,
+                response_obj=response,
+            )
             logging_obj = processor.data.get("litellm_logging_obj")
             transformed_response = (
                 responses_api_bridge.transformation_handler.transform_response(

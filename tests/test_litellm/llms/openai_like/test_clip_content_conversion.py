@@ -141,6 +141,34 @@ def test_clip_responses_transform_converts_anthropic_tool_history():
     assert request["input"][-1]["type"] == "function_call_output"
 
 
+def test_clip_responses_transform_preserves_flat_responses_tools():
+    provider = JSONProviderRegistry.get("clip")
+    assert provider is not None
+
+    flat_tool = {
+        "type": "function",
+        "name": "get_probe_value",
+        "description": "Return a probe value.",
+        "parameters": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    }
+
+    config = create_responses_config_class(provider)()
+    request = config.transform_responses_api_request(
+        model="clip/claude-opus-4-8(xhigh)",
+        input=[{"role": "user", "content": "Say OK; do not call tools."}],
+        response_api_optional_request_params={"tools": [flat_tool]},
+        litellm_params=GenericLiteLLMParams(),
+        headers={},
+    )
+
+    assert request["tools"] == [flat_tool]
+
+
 def test_responses_api_response_accepts_chat_style_usage():
     """clip emits chat-style usage on response.completed; parsing must not raise.
 
