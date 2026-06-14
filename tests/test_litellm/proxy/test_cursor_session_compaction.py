@@ -1,7 +1,13 @@
 import json
 
-from litellm.proxy.response_api_endpoints.endpoints import _normalize_cursor_request_input
-from litellm.proxy.response_api_endpoints.cursor_session import CursorSessionStore
+from litellm.proxy.response_api_endpoints.endpoints import (
+    _annotate_cursor_session_metadata,
+    _normalize_cursor_request_input,
+)
+from litellm.proxy.response_api_endpoints.cursor_session import (
+    CursorSessionDecision,
+    CursorSessionStore,
+)
 
 
 def test_cursor_normalization_preserves_responses_fields():
@@ -71,6 +77,50 @@ def test_cursor_session_compacts_repeated_prefix_after_recorded_turn():
     assert len(json.dumps(turn_two["input"])) < original_size
 
 
+def test_cursor_session_compacts_single_large_turn_without_raw_tail():
+    store = CursorSessionStore(
+        max_entries=8,
+        ttl_seconds=3600,
+        min_estimated_tokens=1,
+        raw_tail_messages=12,
+        raw_tail_max_estimated_tokens=1_000,
+    )
+    old_context = "important-old-context " * 20_000
+    turn_one = {
+        "model": "clip/claude-opus-4-8-high",
+        "metadata": {"cursor_session_id": "session-large-single"},
+        "input": [{"role": "user", "content": old_context}],
+    }
+
+    decision_one = store.prepare_request(turn_one, headers={})
+
+    assert decision_one.input_mode == "full"
+    assert decision_one.raw_tail_messages == []
+
+    store.record_response(decision_one, assistant_text="I captured the context.")
+
+    turn_two_input = turn_one["input"] + [
+        {"role": "assistant", "content": "I captured the context."},
+        {"role": "user", "content": "Now answer the follow-up."},
+    ]
+    turn_two = {
+        "model": "clip/claude-opus-4-8-high",
+        "metadata": {"cursor_session_id": "session-large-single"},
+        "input": list(turn_two_input),
+    }
+    original_body = json.dumps(turn_two_input)
+
+    decision_two = store.prepare_request(turn_two, headers={})
+    compacted_body = json.dumps(turn_two["input"])
+
+    assert decision_two.input_mode == "compacted"
+    assert decision_two.estimated_tokens_after < decision_two.estimated_tokens_before
+    assert len(compacted_body) < len(original_body)
+    assert old_context not in compacted_body
+    assert turn_two["input"][-2]["content"] == "I captured the context."
+    assert turn_two["input"][-1]["content"] == "Now answer the follow-up."
+
+
 def test_cursor_session_opt_out_preserves_full_input():
     store = CursorSessionStore(
         max_entries=8,
@@ -130,3 +180,31 @@ def test_cursor_session_requires_true_prefix_match():
 
     assert decision_two.input_mode == "full"
     assert divergent["input"][0]["content"] == "different context"
+
+
+def test_cursor_session_metadata_is_written_to_litellm_spend_logs_metadata():
+    decision = CursorSessionDecision(
+        session_key="explicit:test",
+        session_key_source="metadata.cursor_session_id",
+        input_mode="compacted",
+        status="hit",
+        original_input=[],
+        original_message_hashes=[],
+        raw_tail_messages=[],
+        estimated_tokens_before=100_000,
+        estimated_tokens_after=2_000,
+    )
+    data = {"metadata": {"cursor_session_id": "session-4"}}
+
+    _annotate_cursor_session_metadata(data, decision)
+
+    assert data["metadata"] == {"cursor_session_id": "session-4"}
+    assert data["litellm_metadata"]["cursor_input_mode"] == "compacted"
+    assert data["litellm_metadata"]["cursor_session_status"] == "hit"
+    assert data["litellm_metadata"]["spend_logs_metadata"] == {
+        "cursor_session_status": "hit",
+        "cursor_session_key_source": "metadata.cursor_session_id",
+        "cursor_input_mode": "compacted",
+        "cursor_estimated_tokens_before": 100_000,
+        "cursor_estimated_tokens_after": 2_000,
+    }

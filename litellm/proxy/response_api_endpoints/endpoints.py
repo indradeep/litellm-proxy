@@ -31,6 +31,9 @@ _cursor_session_store = CursorSessionStore(
     ttl_seconds=int(os.getenv("CURSOR_SESSION_TTL_SECONDS", "7200")),
     min_estimated_tokens=int(os.getenv("CURSOR_COMPACTION_MIN_EST_TOKENS", "60000")),
     raw_tail_messages=int(os.getenv("CURSOR_COMPACTION_RAW_TAIL_MESSAGES", "12")),
+    raw_tail_max_estimated_tokens=int(
+        os.getenv("CURSOR_COMPACTION_RAW_TAIL_MAX_EST_TOKENS", "12000")
+    ),
 )
 
 
@@ -139,15 +142,25 @@ def _annotate_cursor_session_metadata(
     data: Dict[str, Any],
     decision: CursorSessionDecision,
 ) -> None:
-    metadata = data.get("metadata")
-    if not isinstance(metadata, dict):
-        metadata = {}
-        data["metadata"] = metadata
-    metadata["cursor_session_status"] = decision.status
-    metadata["cursor_session_key_source"] = decision.session_key_source
-    metadata["cursor_input_mode"] = decision.input_mode
-    metadata["cursor_estimated_tokens_before"] = decision.estimated_tokens_before
-    metadata["cursor_estimated_tokens_after"] = decision.estimated_tokens_after
+    cursor_metadata = {
+        "cursor_session_status": decision.status,
+        "cursor_session_key_source": decision.session_key_source,
+        "cursor_input_mode": decision.input_mode,
+        "cursor_estimated_tokens_before": decision.estimated_tokens_before,
+        "cursor_estimated_tokens_after": decision.estimated_tokens_after,
+    }
+
+    litellm_metadata = data.get("litellm_metadata")
+    if not isinstance(litellm_metadata, dict):
+        litellm_metadata = {}
+        data["litellm_metadata"] = litellm_metadata
+    litellm_metadata.update(cursor_metadata)
+
+    spend_logs_metadata = litellm_metadata.get("spend_logs_metadata")
+    if not isinstance(spend_logs_metadata, dict):
+        spend_logs_metadata = {}
+        litellm_metadata["spend_logs_metadata"] = spend_logs_metadata
+    spend_logs_metadata.update(cursor_metadata)
 
 
 def _read_response_attr(value: Any, key: str) -> Any:

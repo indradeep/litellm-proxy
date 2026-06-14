@@ -174,12 +174,39 @@ class CursorSessionStore:
         ttl_seconds: int,
         min_estimated_tokens: int,
         raw_tail_messages: int,
+        raw_tail_max_estimated_tokens: int = 12_000,
     ) -> None:
         self.max_entries = max(1, max_entries)
         self.ttl_seconds = max(1, ttl_seconds)
         self.min_estimated_tokens = max(1, min_estimated_tokens)
         self.raw_tail_messages = max(0, raw_tail_messages)
+        self.raw_tail_max_estimated_tokens = max(0, raw_tail_max_estimated_tokens)
         self._sessions: "OrderedDict[str, _CursorSessionState]" = OrderedDict()
+
+    def _select_raw_tail_messages(self, input_value: Any) -> List[Any]:
+        if (
+            not isinstance(input_value, list)
+            or self.raw_tail_messages <= 0
+            or not input_value
+        ):
+            return []
+
+        selected: List[Any] = []
+        estimated_total = 0
+        candidates = input_value[-self.raw_tail_messages :]
+        for message in reversed(candidates):
+            message_tokens = _estimate_tokens(message)
+            if (
+                self.raw_tail_max_estimated_tokens
+                and estimated_total + message_tokens
+                > self.raw_tail_max_estimated_tokens
+            ):
+                break
+            selected.append(message)
+            estimated_total += message_tokens
+
+        selected.reverse()
+        return selected
 
     def prepare_request(
         self,
@@ -197,11 +224,7 @@ class CursorSessionStore:
             headers=headers,
             user_api_key_hash=user_api_key_hash,
         )
-        raw_tail = (
-            list(input_value[-self.raw_tail_messages :])
-            if isinstance(input_value, list) and self.raw_tail_messages
-            else []
-        )
+        raw_tail = self._select_raw_tail_messages(input_value)
 
         if _is_opted_out(data, headers):
             return CursorSessionDecision(
@@ -291,6 +314,9 @@ class CursorSessionStore:
     def record_response(
         self, decision: CursorSessionDecision, *, assistant_text: Optional[str] = None
     ) -> None:
+        # Cursor's next request should include the assistant reply after the
+        # repeated prefix; the suffix path preserves it without duplicating it.
+        _ = assistant_text
         if (
             not decision.session_key
             or not isinstance(decision.original_input, list)
@@ -300,14 +326,12 @@ class CursorSessionStore:
             return
 
         input_for_summary = list(decision.original_input)
-        if assistant_text:
-            input_for_summary = input_for_summary + [
-                {"role": "assistant", "content": assistant_text}
-            ]
-        summary_cutoff = (
-            -self.raw_tail_messages if self.raw_tail_messages else len(input_for_summary)
+        raw_tail_count = len(decision.raw_tail_messages)
+        summary_source = (
+            input_for_summary[:-raw_tail_count]
+            if raw_tail_count
+            else input_for_summary
         )
-        summary_source = input_for_summary[:summary_cutoff]
         if not summary_source:
             summary_source = input_for_summary
 
@@ -333,4 +357,3 @@ class CursorSessionStore:
         ]
         for key in expired:
             self._sessions.pop(key, None)
-
