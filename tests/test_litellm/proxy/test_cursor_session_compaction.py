@@ -224,6 +224,162 @@ def test_cursor_session_compacts_stable_partial_prefix_on_rewritten_history():
     assert rewritten["input"][-1]["content"] == "follow-up"
 
 
+def test_cursor_session_does_not_compact_orphaned_anthropic_tool_result():
+    store = CursorSessionStore(
+        max_entries=8,
+        ttl_seconds=3600,
+        min_estimated_tokens=1,
+        raw_tail_messages=1,
+        raw_tail_max_estimated_tokens=1_000,
+    )
+    old_context = "stable-large-prefix " * 20_000
+    first_input = [
+        {"role": "user", "content": old_context},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_123",
+                    "name": "read_file",
+                    "input": {"path": "foo.py"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Tool result follows."},
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_123",
+                    "content": "file contents",
+                },
+            ],
+        },
+    ]
+    first = {
+        "model": "clip/claude-opus-4-8-high",
+        "metadata": {"cursor_session_id": "session-tool-result"},
+        "input": list(first_input),
+    }
+    decision = store.prepare_request(first, headers={})
+    store.record_response(decision, assistant_text="ok")
+
+    second_input = first_input + [{"role": "user", "content": "follow-up"}]
+    second = {
+        "model": "clip/claude-opus-4-8-high",
+        "metadata": {"cursor_session_id": "session-tool-result"},
+        "input": list(second_input),
+    }
+
+    decision_two = store.prepare_request(second, headers={})
+
+    assert decision_two.input_mode == "full"
+    assert decision_two.status == "tool_history_unsafe"
+    assert second["input"] == second_input
+
+
+def test_cursor_session_does_not_compact_orphaned_responses_tool_output():
+    store = CursorSessionStore(
+        max_entries=8,
+        ttl_seconds=3600,
+        min_estimated_tokens=1,
+        raw_tail_messages=1,
+        raw_tail_max_estimated_tokens=1_000,
+    )
+    old_context = "stable-large-prefix " * 20_000
+    first_input = [
+        {"role": "user", "content": old_context},
+        {
+            "type": "function_call",
+            "call_id": "call_123",
+            "name": "read_file",
+            "arguments": "{}",
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_123",
+            "output": "file contents",
+        },
+    ]
+    first = {
+        "model": "clip/claude-opus-4-8-high",
+        "metadata": {"cursor_session_id": "session-function-output"},
+        "input": list(first_input),
+    }
+    decision = store.prepare_request(first, headers={})
+    store.record_response(decision, assistant_text="ok")
+
+    second_input = first_input + [{"role": "user", "content": "follow-up"}]
+    second = {
+        "model": "clip/claude-opus-4-8-high",
+        "metadata": {"cursor_session_id": "session-function-output"},
+        "input": list(second_input),
+    }
+
+    decision_two = store.prepare_request(second, headers={})
+
+    assert decision_two.input_mode == "full"
+    assert decision_two.status == "tool_history_unsafe"
+    assert second["input"] == second_input
+
+
+def test_cursor_session_compacts_when_tool_result_pair_is_retained():
+    store = CursorSessionStore(
+        max_entries=8,
+        ttl_seconds=3600,
+        min_estimated_tokens=1,
+        raw_tail_messages=2,
+        raw_tail_max_estimated_tokens=1_000,
+    )
+    old_context = "stable-large-prefix " * 20_000
+    first_input = [
+        {"role": "user", "content": old_context},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_123",
+                    "name": "read_file",
+                    "input": {"path": "foo.py"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_123",
+                    "content": "file contents",
+                },
+            ],
+        },
+    ]
+    first = {
+        "model": "clip/claude-opus-4-8-high",
+        "metadata": {"cursor_session_id": "session-safe-tool-result"},
+        "input": list(first_input),
+    }
+    decision = store.prepare_request(first, headers={})
+    store.record_response(decision, assistant_text="ok")
+
+    second = {
+        "model": "clip/claude-opus-4-8-high",
+        "metadata": {"cursor_session_id": "session-safe-tool-result"},
+        "input": first_input + [{"role": "user", "content": "follow-up"}],
+    }
+
+    decision_two = store.prepare_request(second, headers={})
+
+    assert decision_two.input_mode == "compacted"
+    assert decision_two.status == "hit"
+    assert second["input"][1]["content"][0]["type"] == "tool_use"
+    assert second["input"][2]["content"][0]["type"] == "tool_result"
+
+
 def test_cursor_session_metadata_is_written_to_litellm_spend_logs_metadata():
     decision = CursorSessionDecision(
         session_key="explicit:test",

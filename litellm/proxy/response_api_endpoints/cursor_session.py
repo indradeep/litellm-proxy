@@ -3,7 +3,7 @@ import json
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Set
 
 
 _EXPLICIT_METADATA_KEYS = (
@@ -175,6 +175,70 @@ def _build_summary_message(messages: List[Any], max_messages: int = 24) -> Dict[
     return {"role": "developer", "content": "\n".join(lines)}
 
 
+def _add_string_id(ids: Set[str], value: Any) -> None:
+    if isinstance(value, str) and value:
+        ids.add(value)
+
+
+def _tool_use_ids_from_dict(value: Dict[str, Any]) -> Set[str]:
+    ids: Set[str] = set()
+    value_type = value.get("type")
+    if value_type == "function_call":
+        _add_string_id(ids, value.get("call_id"))
+        _add_string_id(ids, value.get("id"))
+    elif value_type == "tool_use":
+        _add_string_id(ids, value.get("id"))
+        _add_string_id(ids, value.get("tool_use_id"))
+
+    tool_calls = value.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for tool_call in tool_calls:
+            if isinstance(tool_call, dict):
+                _add_string_id(ids, tool_call.get("id"))
+                _add_string_id(ids, tool_call.get("call_id"))
+
+    content = value.get("content")
+    if isinstance(content, list):
+        for content_block in content:
+            if isinstance(content_block, dict):
+                ids.update(_tool_use_ids_from_dict(content_block))
+    return ids
+
+
+def _tool_result_ids_from_dict(value: Dict[str, Any]) -> Set[str]:
+    ids: Set[str] = set()
+    value_type = value.get("type")
+    if value_type == "function_call_output":
+        _add_string_id(ids, value.get("call_id"))
+        _add_string_id(ids, value.get("id"))
+    elif value_type == "tool_result":
+        _add_string_id(ids, value.get("tool_use_id"))
+
+    _add_string_id(ids, value.get("tool_call_id"))
+
+    content = value.get("content")
+    if isinstance(content, list):
+        for content_block in content:
+            if isinstance(content_block, dict):
+                ids.update(_tool_result_ids_from_dict(content_block))
+    return ids
+
+
+def _has_orphaned_tool_results(messages: List[Any]) -> bool:
+    previous_tool_use_ids: Set[str] = set()
+    for message in messages:
+        if not isinstance(message, dict):
+            previous_tool_use_ids = set()
+            continue
+
+        result_ids = _tool_result_ids_from_dict(message)
+        if result_ids and not result_ids.issubset(previous_tool_use_ids):
+            return True
+
+        previous_tool_use_ids = _tool_use_ids_from_dict(message)
+    return False
+
+
 class CursorSessionStore:
     def __init__(
         self,
@@ -284,6 +348,18 @@ class CursorSessionStore:
                 [state.summary_message] + list(state.raw_tail_messages) + suffix
             )
             estimated_after = _estimate_tokens(compacted_input)
+            if _has_orphaned_tool_results(compacted_input):
+                return CursorSessionDecision(
+                    session_key=session_key,
+                    session_key_source=key_source,
+                    input_mode="full",
+                    status="tool_history_unsafe",
+                    original_input=original_input,
+                    original_message_hashes=hashes,
+                    raw_tail_messages=raw_tail,
+                    estimated_tokens_before=estimated_before,
+                    estimated_tokens_after=estimated_before,
+                )
             if estimated_after >= estimated_before:
                 return CursorSessionDecision(
                     session_key=session_key,
@@ -340,6 +416,18 @@ class CursorSessionStore:
             + suffix
         )
         estimated_after = _estimate_tokens(compacted_input)
+        if _has_orphaned_tool_results(compacted_input):
+            return CursorSessionDecision(
+                session_key=session_key,
+                session_key_source=key_source,
+                input_mode="full",
+                status="tool_history_unsafe",
+                original_input=original_input,
+                original_message_hashes=hashes,
+                raw_tail_messages=raw_tail,
+                estimated_tokens_before=estimated_before,
+                estimated_tokens_after=estimated_before,
+            )
         if estimated_after >= estimated_before:
             return CursorSessionDecision(
                 session_key=session_key,
