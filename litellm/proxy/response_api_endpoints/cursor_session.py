@@ -134,6 +134,15 @@ def _is_prefix(prefix: List[str], values: List[str]) -> bool:
     return len(prefix) <= len(values) and values[: len(prefix)] == prefix
 
 
+def _common_prefix_len(left: List[str], right: List[str]) -> int:
+    count = 0
+    for left_value, right_value in zip(left, right):
+        if left_value != right_value:
+            break
+        count += 1
+    return count
+
+
 def _clip_text(text: str, limit: int = 700) -> str:
     if len(text) <= limit:
         return text
@@ -267,9 +276,42 @@ class CursorSessionStore:
                 estimated_tokens_after=estimated_before,
             )
 
-        if not _is_prefix(state.message_hashes, hashes) or len(hashes) <= len(
+        if _is_prefix(state.message_hashes, hashes) and len(hashes) > len(
             state.message_hashes
         ):
+            suffix = input_value[len(state.message_hashes) :]
+            compacted_input = (
+                [state.summary_message] + list(state.raw_tail_messages) + suffix
+            )
+            estimated_after = _estimate_tokens(compacted_input)
+            if estimated_after >= estimated_before:
+                return CursorSessionDecision(
+                    session_key=session_key,
+                    session_key_source=key_source,
+                    input_mode="full",
+                    status="not_smaller",
+                    original_input=original_input,
+                    original_message_hashes=hashes,
+                    raw_tail_messages=raw_tail,
+                    estimated_tokens_before=estimated_before,
+                    estimated_tokens_after=estimated_before,
+                )
+
+            data["input"] = compacted_input
+            return CursorSessionDecision(
+                session_key=session_key,
+                session_key_source=key_source,
+                input_mode="compacted",
+                status="hit",
+                original_input=original_input,
+                original_message_hashes=hashes,
+                raw_tail_messages=raw_tail,
+                estimated_tokens_before=estimated_before,
+                estimated_tokens_after=estimated_after,
+            )
+
+        common_prefix_len = _common_prefix_len(state.message_hashes, hashes)
+        if common_prefix_len <= 0 or common_prefix_len >= len(hashes):
             return CursorSessionDecision(
                 session_key=session_key,
                 session_key_source=key_source,
@@ -282,8 +324,21 @@ class CursorSessionStore:
                 estimated_tokens_after=estimated_before,
             )
 
-        suffix = input_value[len(state.message_hashes) :]
-        compacted_input = [state.summary_message] + list(state.raw_tail_messages) + suffix
+        stable_prefix = input_value[:common_prefix_len]
+        stable_prefix_tail = self._select_raw_tail_messages(stable_prefix)
+        stable_tail_count = len(stable_prefix_tail)
+        stable_summary_source = (
+            stable_prefix[:-stable_tail_count] if stable_tail_count else stable_prefix
+        )
+        if not stable_summary_source:
+            stable_summary_source = stable_prefix
+
+        suffix = input_value[common_prefix_len:]
+        compacted_input = (
+            [_build_summary_message(stable_summary_source)]
+            + stable_prefix_tail
+            + suffix
+        )
         estimated_after = _estimate_tokens(compacted_input)
         if estimated_after >= estimated_before:
             return CursorSessionDecision(
@@ -303,7 +358,7 @@ class CursorSessionStore:
             session_key=session_key,
             session_key_source=key_source,
             input_mode="compacted",
-            status="hit",
+            status="partial_prefix_hit",
             original_input=original_input,
             original_message_hashes=hashes,
             raw_tail_messages=raw_tail,

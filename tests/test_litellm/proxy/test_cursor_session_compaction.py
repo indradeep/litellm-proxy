@@ -182,6 +182,48 @@ def test_cursor_session_requires_true_prefix_match():
     assert divergent["input"][0]["content"] == "different context"
 
 
+def test_cursor_session_compacts_stable_partial_prefix_on_rewritten_history():
+    store = CursorSessionStore(
+        max_entries=8,
+        ttl_seconds=3600,
+        min_estimated_tokens=1,
+        raw_tail_messages=12,
+        raw_tail_max_estimated_tokens=1_000,
+    )
+    old_context = "stable-large-prefix " * 20_000
+    first = {
+        "model": "clip/claude-opus-4-8-high",
+        "metadata": {"cursor_session_id": "session-rewrite"},
+        "input": [
+            {"role": "user", "content": old_context},
+            {"role": "assistant", "content": "old assistant message"},
+        ],
+    }
+    decision = store.prepare_request(first, headers={})
+    store.record_response(decision, assistant_text="ok")
+
+    rewritten_input = [
+        {"role": "user", "content": old_context},
+        {"role": "assistant", "content": "rewritten assistant message"},
+        {"role": "user", "content": "follow-up"},
+    ]
+    rewritten = {
+        "model": "clip/claude-opus-4-8-high",
+        "metadata": {"cursor_session_id": "session-rewrite"},
+        "input": list(rewritten_input),
+    }
+
+    decision_two = store.prepare_request(rewritten, headers={})
+    compacted_body = json.dumps(rewritten["input"])
+
+    assert decision_two.input_mode == "compacted"
+    assert decision_two.status == "partial_prefix_hit"
+    assert decision_two.estimated_tokens_after < decision_two.estimated_tokens_before
+    assert old_context not in compacted_body
+    assert rewritten["input"][-2]["content"] == "rewritten assistant message"
+    assert rewritten["input"][-1]["content"] == "follow-up"
+
+
 def test_cursor_session_metadata_is_written_to_litellm_spend_logs_metadata():
     decision = CursorSessionDecision(
         session_key="explicit:test",
