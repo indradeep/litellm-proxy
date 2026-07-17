@@ -10,6 +10,7 @@ before response.completed.
 
 from unittest.mock import AsyncMock
 
+from litellm.main import stream_chunk_builder
 from litellm.responses.litellm_completion_transformation.streaming_iterator import (
     LiteLLMCompletionStreamingIterator,
 )
@@ -20,6 +21,35 @@ from litellm.types.utils import (
     ModelResponseStream,
     StreamingChoices,
 )
+
+
+def test_model_less_chunk_uses_iterator_model_for_final_response():
+    iterator = LiteLLMCompletionStreamingIterator(
+        model="oci/openai.gpt-5.6-sol",
+        litellm_custom_stream_wrapper=AsyncMock(),
+        request_input="Test input",
+        responses_api_request={},
+    )
+    chunk = ModelResponseStream(
+        id="chunk-1",
+        created=123,
+        object="chat.completion.chunk",
+        choices=[
+            StreamingChoices(
+                finish_reason="stop",
+                index=0,
+                delta=Delta(role="assistant", content="OK"),
+            )
+        ],
+    )
+
+    response = stream_chunk_builder(
+        chunks=[iterator._snapshot_chunk_for_stream_chunk_builder(chunk)]
+    )
+
+    assert response is not None
+    assert response.model == "oci/openai.gpt-5.6-sol"
+    assert response.choices[0].message.content == "OK"
 
 
 def test_tool_call_delta_is_emitted_as_responses_events():

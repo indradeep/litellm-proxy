@@ -1,6 +1,7 @@
 import os
 import sys
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,32 +13,25 @@ from litellm.completion_extras.litellm_responses_transformation.handler import (
 )
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLogging
 from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
+from litellm.types.llms.openai import ResponsesAPIResponse
 from litellm.types.utils import ModelResponse
 
 
 def test_is_preformatted_cached_chat_stream_true():
     stream = MagicMock(spec=CustomStreamWrapper)
     stream.custom_llm_provider = "cached_response"
-    assert (
-        ResponsesToCompletionBridgeHandler._is_preformatted_cached_chat_stream(stream)
-        is True
-    )
+    assert ResponsesToCompletionBridgeHandler._is_preformatted_cached_chat_stream(stream) is True
 
 
 def test_is_preformatted_cached_chat_stream_false_wrong_provider():
     stream = MagicMock(spec=CustomStreamWrapper)
     stream.custom_llm_provider = "openai"
-    assert (
-        ResponsesToCompletionBridgeHandler._is_preformatted_cached_chat_stream(stream)
-        is False
-    )
+    assert ResponsesToCompletionBridgeHandler._is_preformatted_cached_chat_stream(stream) is False
 
 
 def test_is_preformatted_cached_chat_stream_false_wrong_type():
     assert (
-        ResponsesToCompletionBridgeHandler._is_preformatted_cached_chat_stream(
-            {"object": "chat.completion.chunk"}
-        )
+        ResponsesToCompletionBridgeHandler._is_preformatted_cached_chat_stream({"object": "chat.completion.chunk"})
         is False
     )
 
@@ -148,3 +142,83 @@ async def test_acompletion_skips_rewrapping_preformatted_cached_chat_stream():
 
     post.assert_called_once()
     assert result is stream
+
+
+def test_collect_response_merges_output_items_into_reasoning_only_envelope():
+    reasoning_item = SimpleNamespace(id="rs-1", type="reasoning")
+    message_item = SimpleNamespace(id="msg-1", type="message")
+    response = ResponsesAPIResponse.model_construct(
+        id="resp-1",
+        object="response",
+        created_at=1,
+        status="completed",
+        model="gpt-5.4-mini",
+        output=[reasoning_item],
+    )
+
+    class Stream:
+        completed_response = None
+
+        def __init__(self):
+            self.chunks = iter(
+                [
+                    SimpleNamespace(
+                        type="response.output_item.done",
+                        output_index=1,
+                        item=message_item,
+                    ),
+                    SimpleNamespace(type="response.completed", response=response),
+                ]
+            )
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self.chunks)
+
+    result = ResponsesToCompletionBridgeHandler()._collect_response_from_stream(Stream())
+
+    assert [item.id for item in result.output] == ["rs-1", "msg-1"]
+
+
+@pytest.mark.asyncio
+async def test_collect_async_response_merges_output_items_into_reasoning_only_envelope():
+    reasoning_item = SimpleNamespace(id="rs-1", type="reasoning")
+    message_item = SimpleNamespace(id="msg-1", type="message")
+    response = ResponsesAPIResponse.model_construct(
+        id="resp-1",
+        object="response",
+        created_at=1,
+        status="completed",
+        model="gpt-5.4-mini",
+        output=[reasoning_item],
+    )
+
+    class AsyncStream:
+        completed_response = None
+
+        def __init__(self):
+            self.chunks = iter(
+                [
+                    SimpleNamespace(
+                        type="response.output_item.done",
+                        output_index=1,
+                        item=message_item,
+                    ),
+                    SimpleNamespace(type="response.completed", response=response),
+                ]
+            )
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.chunks)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    result = await ResponsesToCompletionBridgeHandler()._collect_response_from_stream_async(AsyncStream())
+
+    assert [item.id for item in result.output] == ["rs-1", "msg-1"]

@@ -304,13 +304,15 @@ class BaseResponsesAPIStreamingIterator:
         # to chat completion format (prompt_tokens/completion_tokens) for internal logging
         # Use model_dump + model_validate instead of deepcopy to avoid pickle errors with
         # Pydantic ValidatorIterator when response contains tool_choice with allowed_tools (fixes #17192)
-        logging_response = self.completed_response
-        if self.completed_response is not None and hasattr(
-            self.completed_response, "model_dump"
-        ):
+        # Success callbacks consume response objects, not stream-event wrappers.
+        # Logging the wrapper prevents the standard logging payload (and cost)
+        # from being built for providers that require streaming upstream while
+        # LiteLLM buffers the stream for a non-streaming caller.
+        logging_response = self._get_completed_response_object() or self.completed_response
+        if logging_response is not None and hasattr(logging_response, "model_dump"):
             try:
-                logging_response = type(self.completed_response).model_validate(
-                    self.completed_response.model_dump()
+                logging_response = type(logging_response).model_validate(
+                    logging_response.model_dump()
                 )
             except Exception:
                 # Fallback to original if serialization fails

@@ -41,10 +41,7 @@ class ResponsesToCompletionBridgeHandler:
     def _is_preformatted_cached_chat_stream(result: Any) -> bool:
         from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
 
-        return (
-            isinstance(result, CustomStreamWrapper)
-            and result.custom_llm_provider == "cached_response"
-        )
+        return isinstance(result, CustomStreamWrapper) and result.custom_llm_provider == "cached_response"
 
     @staticmethod
     def _coerce_response_object(
@@ -70,14 +67,45 @@ class ResponsesToCompletionBridgeHandler:
                     existing.setdefault(key, value)
         return response
 
+    @staticmethod
+    def _merge_streamed_output_items(response_obj: Any, output_items: dict) -> Any:
+        if not output_items:
+            return response_obj
+
+        merged_items = dict(output_items)
+        for index, item in enumerate(getattr(response_obj, "output", None) or []):
+            merged_items.setdefault(index, item)
+        merged_output = [merged_items[index] for index in sorted(merged_items)]
+
+        if hasattr(response_obj, "model_copy"):
+            return response_obj.model_copy(update={"output": merged_output})
+        response_obj.output = merged_output
+        return response_obj
+
     def _collect_response_from_stream(self, stream_iter: Any) -> "ResponsesAPIResponse":
-        for _ in stream_iter:
-            pass
+        last_response_obj = None
+        output_items = {}
+        for chunk in stream_iter:
+            chunk_type = getattr(chunk, "type", None)
+            if chunk_type == "response.output_item.done":
+                idx = getattr(chunk, "output_index", None)
+                item = getattr(chunk, "item", None)
+                if idx is not None and item is not None:
+                    output_items[idx] = item
+
+            resp = getattr(chunk, "response", None)
+            if resp is not None:
+                last_response_obj = resp
 
         completed = getattr(stream_iter, "completed_response", None)
         response_obj = getattr(completed, "response", None) if completed else None
         if response_obj is None:
+            response_obj = last_response_obj
+
+        if response_obj is None:
             raise ValueError("Stream ended without a completed response")
+
+        response_obj = self._merge_streamed_output_items(response_obj, output_items)
 
         hidden_params = getattr(stream_iter, "_hidden_params", None)
         response = self._coerce_response_object(response_obj, hidden_params)
@@ -85,16 +113,30 @@ class ResponsesToCompletionBridgeHandler:
             raise ValueError("Stream completed response is invalid")
         return response
 
-    async def _collect_response_from_stream_async(
-        self, stream_iter: Any
-    ) -> "ResponsesAPIResponse":
-        async for _ in stream_iter:
-            pass
+    async def _collect_response_from_stream_async(self, stream_iter: Any) -> "ResponsesAPIResponse":
+        last_response_obj = None
+        output_items = {}
+        async for chunk in stream_iter:
+            chunk_type = getattr(chunk, "type", None)
+            if chunk_type == "response.output_item.done":
+                idx = getattr(chunk, "output_index", None)
+                item = getattr(chunk, "item", None)
+                if idx is not None and item is not None:
+                    output_items[idx] = item
+
+            resp = getattr(chunk, "response", None)
+            if resp is not None:
+                last_response_obj = resp
 
         completed = getattr(stream_iter, "completed_response", None)
         response_obj = getattr(completed, "response", None) if completed else None
         if response_obj is None:
+            response_obj = last_response_obj
+
+        if response_obj is None:
             raise ValueError("Stream ended without a completed response")
+
+        response_obj = self._merge_streamed_output_items(response_obj, output_items)
 
         hidden_params = getattr(stream_iter, "_hidden_params", None)
         response = self._coerce_response_object(response_obj, hidden_params)
@@ -102,9 +144,7 @@ class ResponsesToCompletionBridgeHandler:
             raise ValueError("Stream completed response is invalid")
         return response
 
-    def validate_input_kwargs(
-        self, kwargs: dict
-    ) -> ResponsesToCompletionBridgeHandlerInputKwargs:
+    def validate_input_kwargs(self, kwargs: dict) -> ResponsesToCompletionBridgeHandlerInputKwargs:
         from litellm import LiteLLMLoggingObj
         from litellm.types.utils import ModelResponse
 
@@ -151,7 +191,9 @@ class ResponsesToCompletionBridgeHandler:
             custom_llm_provider=custom_llm_provider,
         )
 
-    def completion(self, *args, **kwargs) -> Union[
+    def completion(
+        self, *args, **kwargs
+    ) -> Union[
         Coroutine[Any, Any, Union["ModelResponse", "CustomStreamWrapper"]],
         "ModelResponse",
         "CustomStreamWrapper",
@@ -222,9 +264,7 @@ class ResponsesToCompletionBridgeHandler:
             )
         else:
             if self._is_preformatted_cached_chat_stream(result):
-                return self._apply_post_stream_processing(
-                    result, model, custom_llm_provider
-                )
+                return self._apply_post_stream_processing(result, model, custom_llm_provider)
             completion_stream = self.transformation_handler.get_model_response_iterator(
                 streaming_response=result,  # type: ignore
                 sync_stream=True,
@@ -236,13 +276,9 @@ class ResponsesToCompletionBridgeHandler:
                 custom_llm_provider=custom_llm_provider,
                 logging_obj=logging_obj,
             )
-            return self._apply_post_stream_processing(
-                streamwrapper, model, custom_llm_provider
-            )
+            return self._apply_post_stream_processing(streamwrapper, model, custom_llm_provider)
 
-    async def acompletion(
-        self, *args, **kwargs
-    ) -> Union["ModelResponse", "CustomStreamWrapper"]:
+    async def acompletion(self, *args, **kwargs) -> Union["ModelResponse", "CustomStreamWrapper"]:
         from litellm import aresponses
         from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
 
@@ -293,9 +329,7 @@ class ResponsesToCompletionBridgeHandler:
         elif isinstance(result, ModelResponse):
             return result
         elif not stream:
-            responses_api_response = await self._collect_response_from_stream_async(
-                result
-            )
+            responses_api_response = await self._collect_response_from_stream_async(result)
             return self.transformation_handler.transform_response(
                 model=model,
                 raw_response=responses_api_response,
@@ -311,9 +345,7 @@ class ResponsesToCompletionBridgeHandler:
             )
         else:
             if self._is_preformatted_cached_chat_stream(result):
-                return self._apply_post_stream_processing(
-                    result, model, custom_llm_provider
-                )
+                return self._apply_post_stream_processing(result, model, custom_llm_provider)
             completion_stream = self.transformation_handler.get_model_response_iterator(
                 streaming_response=result,  # type: ignore
                 sync_stream=False,
@@ -325,9 +357,7 @@ class ResponsesToCompletionBridgeHandler:
                 custom_llm_provider=custom_llm_provider,
                 logging_obj=logging_obj,
             )
-            return self._apply_post_stream_processing(
-                streamwrapper, model, custom_llm_provider
-            )
+            return self._apply_post_stream_processing(streamwrapper, model, custom_llm_provider)
 
     @staticmethod
     def _apply_post_stream_processing(

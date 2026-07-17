@@ -511,15 +511,16 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             )
         return response
 
-    @staticmethod
     def _snapshot_chunk_for_stream_chunk_builder(
-        chunk: ModelResponseStream,
+        self, chunk: ModelResponseStream
     ) -> Dict[str, Any]:
         """
         Convert a streaming chunk into a plain dict for end-of-stream assembly.
         Keep _hidden_params so downstream usage/header behavior is preserved.
         """
         chunk_dict = chunk.model_dump()
+        if not chunk_dict.get("model"):
+            chunk_dict["model"] = self.model
         hidden_params = getattr(chunk, "_hidden_params", None)
         if hidden_params is not None:
             chunk_dict["_hidden_params"] = (

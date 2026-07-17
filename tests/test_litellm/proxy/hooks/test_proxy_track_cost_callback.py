@@ -3,9 +3,7 @@ import sys
 
 import pytest
 
-sys.path.insert(
-    0, os.path.abspath("../../../..")
-)  # Adds the parent directory to the system path
+sys.path.insert(0, os.path.abspath("../../../.."))  # Adds the parent directory to the system path
 
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -73,9 +71,7 @@ async def test_async_post_call_failure_hook():
 
         # Check that metadata was properly updated
         assert "litellm_params" in call_args["kwargs"]
-        assert call_args["kwargs"]["litellm_params"]["proxy_server_request"] == {
-            "request_id": "test_request_id"
-        }
+        assert call_args["kwargs"]["litellm_params"]["proxy_server_request"] == {"request_id": "test_request_id"}
         metadata = call_args["kwargs"]["litellm_params"]["metadata"]
         assert metadata["user_api_key"] == "test_api_key"
         assert metadata["status"] == "failure"
@@ -208,9 +204,7 @@ async def test_should_continue_failure_tracking_when_budget_release_fails():
         )
         assert mock_invalidate_budget_reservation_counters.await_count == 1
         assert (
-            mock_invalidate_budget_reservation_counters.await_args.kwargs[
-                "budget_reservation"
-            ]
+            mock_invalidate_budget_reservation_counters.await_args.kwargs["budget_reservation"]
             is user_api_key_dict.budget_reservation
         )
         assert user_api_key_dict.budget_reservation["finalized"] is True
@@ -305,36 +299,21 @@ def test_get_budget_reservation_from_metadata_handles_dict_auth_object():
         "entries": [{"counter_key": "spend:key:test_api_key"}],
     }
 
+    assert _get_budget_reservation_from_metadata(metadata={"user_api_key_auth": dict(UserAPIKeyAuth())}) is None
     assert (
         _get_budget_reservation_from_metadata(
-            metadata={"user_api_key_auth": dict(UserAPIKeyAuth())}
-        )
-        is None
-    )
-    assert (
-        _get_budget_reservation_from_metadata(
-            metadata={
-                "user_api_key_auth": UserAPIKeyAuth(
-                    budget_reservation=budget_reservation
-                )
-            }
+            metadata={"user_api_key_auth": UserAPIKeyAuth(budget_reservation=budget_reservation)}
         )
         == budget_reservation
     )
     assert (
         _get_budget_reservation_from_metadata(
-            metadata={
-                "user_api_key_auth": dict(
-                    UserAPIKeyAuth(budget_reservation=budget_reservation)
-                )
-            }
+            metadata={"user_api_key_auth": dict(UserAPIKeyAuth(budget_reservation=budget_reservation))}
         )
         == budget_reservation
     )
     assert (
-        _get_budget_reservation_from_metadata(
-            metadata={"user_api_key_budget_reservation": budget_reservation}
-        )
+        _get_budget_reservation_from_metadata(metadata={"user_api_key_budget_reservation": budget_reservation})
         is budget_reservation
     )
 
@@ -342,9 +321,7 @@ def test_get_budget_reservation_from_metadata_handles_dict_auth_object():
 @pytest.mark.asyncio
 async def test_update_database_and_spend_counters_releases_reservation_when_db_update_fails():
     proxy_logging_obj = MagicMock()
-    proxy_logging_obj.db_spend_update_writer.update_database = AsyncMock(
-        side_effect=Exception("db unavailable")
-    )
+    proxy_logging_obj.db_spend_update_writer.update_database = AsyncMock(side_effect=Exception("db unavailable"))
     increment_spend_counters = AsyncMock()
     budget_reservation = {"reserved_cost": 0.5, "entries": []}
 
@@ -380,9 +357,7 @@ async def test_update_database_and_spend_counters_releases_reservation_when_db_u
 async def test_update_database_and_spend_counters_preserves_db_exception_when_release_fails():
     proxy_logging_obj = MagicMock()
     db_exception = RuntimeError("db unavailable")
-    proxy_logging_obj.db_spend_update_writer.update_database = AsyncMock(
-        side_effect=db_exception
-    )
+    proxy_logging_obj.db_spend_update_writer.update_database = AsyncMock(side_effect=db_exception)
     increment_spend_counters = AsyncMock()
     budget_reservation = {"reserved_cost": 0.5, "entries": []}
 
@@ -426,12 +401,8 @@ async def test_update_database_and_spend_counters_preserves_db_exception_when_re
             budget_reservation=budget_reservation,
         )
         assert mock_log_exception.call_count == 2
-        mock_log_exception.assert_any_call(
-            "Failed to release budget reservation after database update failed"
-        )
-        mock_log_exception.assert_any_call(
-            "Failed to invalidate budget reservation counters after release failed"
-        )
+        mock_log_exception.assert_any_call("Failed to release budget reservation after database update failed")
+        mock_log_exception.assert_any_call("Failed to invalidate budget reservation counters after release failed")
 
     increment_spend_counters.assert_not_awaited()
 
@@ -657,10 +628,7 @@ async def test_async_post_call_failure_hook_propagates_trace_id_from_logging_obj
 
         # standard_logging_object should have been propagated from logging obj
         assert call_kwargs.get("standard_logging_object") is not None
-        assert (
-            call_kwargs["standard_logging_object"]["trace_id"]
-            == "trace-id-from-logging-obj"
-        )
+        assert call_kwargs["standard_logging_object"]["trace_id"] == "trace-id-from-logging-obj"
         # litellm_trace_id should also be propagated as a fallback
         assert call_kwargs.get("litellm_trace_id") == "trace-id-from-logging-obj"
 

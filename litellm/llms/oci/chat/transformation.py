@@ -89,14 +89,15 @@ def _model_uses_max_completion_tokens(model: str) -> bool:
 
     Reasoning models on OCI (e.g. the OpenAI GPT-5 family) reject ``maxTokens``
     with HTTP 400 and require ``maxCompletionTokens`` per OpenAI's reasoning-API
-    convention. Driven by ``supports_reasoning`` in
-    ``model_prices_and_context_window.json`` so new model families are picked
-    up via a catalog update rather than a code change.
+    convention. Versioned OCI GPT-5 model IDs use the same contract before
+    their catalog entry is available.
     """
     if not model:
         return False
     name = model[4:] if model.lower().startswith("oci/") else model
-    return supports_reasoning(model=name, custom_llm_provider="oci")
+    return name.startswith("openai.gpt-5.") or supports_reasoning(
+        model=name, custom_llm_provider="oci"
+    )
 
 
 def _iter_sse_events(stream: Iterator[str]) -> Iterator[str]:

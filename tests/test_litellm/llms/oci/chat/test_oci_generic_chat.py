@@ -376,6 +376,9 @@ class TestGpt5MaxCompletionTokens:
         assert _model_uses_max_completion_tokens("openai.gpt-5-mini") is True
         assert _model_uses_max_completion_tokens("openai.gpt-5-nano") is True
         assert _model_uses_max_completion_tokens("oci/openai.gpt-5") is True
+        assert _model_uses_max_completion_tokens("openai.gpt-5.6-sol") is True
+        assert _model_uses_max_completion_tokens("oci/openai.gpt-5.6-terra") is True
+        assert _model_uses_max_completion_tokens("openai.gpt-5.6-luna") is True
 
         assert _model_uses_max_completion_tokens("openai.gpt-oss-120b") is False
         assert _model_uses_max_completion_tokens("meta.llama-3.3-70b-instruct") is False

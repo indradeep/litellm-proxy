@@ -41,6 +41,40 @@ from litellm.types.llms.openai import (
 class TestBaseResponsesAPIStreamingIterator:
     """Test cases for BaseResponsesAPIStreamingIterator"""
 
+    def test_completed_event_logs_response_body(self):
+        mock_response = Mock()
+        mock_response.headers = {}
+        mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
+        mock_logging_obj.model_call_details = {"litellm_params": {}}
+        completed_response = Mock(spec=ResponsesAPIResponse)
+        completed_event = Mock(spec=ResponseCompletedEvent)
+        completed_event.type = ResponsesAPIStreamEvents.RESPONSE_COMPLETED
+        completed_event.response = completed_response
+
+        iterator = BaseResponsesAPIStreamingIterator(
+            response=mock_response,
+            model="gpt-5.4-mini",
+            responses_api_provider_config=Mock(spec=BaseResponsesAPIConfig),
+            logging_obj=mock_logging_obj,
+            custom_llm_provider="oca",
+        )
+        iterator.completed_response = completed_event
+
+        with (
+            patch("litellm.responses.streaming_iterator.run_async_function") as run_async,
+            patch("litellm.responses.streaming_iterator.executor") as mock_executor,
+        ):
+            iterator._log_completed_response(is_async=False)
+
+        assert any(
+            call.kwargs.get("result") is completed_response
+            for call in run_async.call_args_list
+        )
+        assert any(
+            call.kwargs.get("result") is completed_response
+            for call in mock_executor.submit.call_args_list
+        )
+
     @pytest.mark.asyncio
     async def test_responses_streaming_iterator_parses_u2028_in_sse_json(self):
         """

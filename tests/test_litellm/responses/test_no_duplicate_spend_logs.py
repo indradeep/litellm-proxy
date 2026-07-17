@@ -49,6 +49,18 @@ def test_logging_object_not_popped():
     )
 
 
+def test_provider_forced_responses_stream_is_detected():
+    from unittest.mock import Mock
+
+    from litellm.responses.streaming_iterator import BaseResponsesAPIStreamingIterator
+    from litellm.utils import _is_responses_api_streaming_result
+
+    iterator = Mock(spec=BaseResponsesAPIStreamingIterator)
+
+    assert _is_responses_api_streaming_result(iterator) is True
+    assert _is_responses_api_streaming_result(object()) is False
+
+
 @pytest.mark.asyncio
 async def test_async_no_duplicate_spend_logs():
     """

@@ -1598,7 +1598,7 @@ def client(original_function):  # noqa: PLR0915
             if _is_streaming_request(
                 kwargs=kwargs,
                 call_type=call_type,
-            ):
+            ) or _is_responses_api_streaming_result(result):
                 if (
                     "complete_response" in kwargs
                     and kwargs["complete_response"] is True
@@ -1902,7 +1902,7 @@ def client(original_function):  # noqa: PLR0915
             if _is_streaming_request(
                 kwargs=kwargs,
                 call_type=call_type,
-            ):
+            ) or _is_responses_api_streaming_result(result):
                 if (
                     "complete_response" in kwargs
                     and kwargs["complete_response"] is True
@@ -2164,6 +2164,13 @@ def _is_streaming_request(
     if "stream" in kwargs and kwargs["stream"] is True:
         return True
     return call_type in _STREAMING_CALL_TYPES
+
+
+def _is_responses_api_streaming_result(result: Any) -> bool:
+    """Detect provider-forced Responses streams returned to non-stream callers."""
+    from litellm.responses.streaming_iterator import BaseResponsesAPIStreamingIterator
+
+    return isinstance(result, BaseResponsesAPIStreamingIterator)
 
 
 def _select_tokenizer(
