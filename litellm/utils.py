@@ -7996,6 +7996,10 @@ class ProviderConfigManager:
             )
 
             return DashScopeRerankConfig()
+        elif litellm.LlmProviders.OCI == provider:
+            from litellm.llms.oci.rerank.transformation import OCIRerankConfig
+
+            return OCIRerankConfig()
         return litellm.CohereRerankConfig()
 
     @staticmethod
@@ -8144,6 +8148,10 @@ class ProviderConfigManager:
             )
 
             return SonioxAudioTranscriptionConfig()
+        elif litellm.LlmProviders.OCI == provider:
+            from litellm.llms.oci.audio_transcription.transformation import OCIAudioTranscriptionConfig
+
+            return OCIAudioTranscriptionConfig()
         return None
 
     @staticmethod
@@ -8225,6 +8233,8 @@ class ProviderConfigManager:
             return litellm.ManusResponsesAPIConfig()
         elif litellm.LlmProviders.PERPLEXITY == provider:
             return litellm.PerplexityResponsesConfig()
+        elif litellm.LlmProviders.OCA == provider:
+            return litellm.OCAResponsesAPIConfig()
         elif litellm.LlmProviders.DATABRICKS == provider:
             # Databricks Responses API is only compatible with OpenAI GPT models
             if model and "gpt" in model.lower():
@@ -8547,6 +8557,10 @@ class ProviderConfigManager:
             )
 
             return get_openai_image_generation_config(model)
+        elif LlmProviders.OCI == provider:
+            from litellm.llms.oci.image_generation.transformation import OCIImageGenerationConfig
+
+            return OCIImageGenerationConfig()
         elif LlmProviders.AZURE == provider:
             from litellm.llms.azure.image_generation import (
                 get_azure_image_generation_config,

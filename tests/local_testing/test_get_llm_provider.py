@@ -155,11 +155,14 @@ def test_default_api_base():
                 if other_provider.value != provider and provider != "{}_chat".format(
                     other_provider.value
                 ):
-                    if provider == "codestral" and other_provider.value == "mistral":
-                        continue
-                    elif provider == "github" and other_provider.value == "azure":
-                        continue
-                    assert other_provider.value not in api_base.replace("/openai", "")
+                        if provider == "codestral" and other_provider.value == "mistral":
+                            continue
+                        elif provider == "github" and other_provider.value == "azure":
+                            continue
+                        elif other_provider == LlmProviders.OCA:
+                            # "oca" is an incidental substring of localhost.
+                            continue
+                        assert other_provider.value not in api_base.replace("/openai", "")
 
 
 def test_hosted_vllm_default_api_key():

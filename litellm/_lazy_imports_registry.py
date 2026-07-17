@@ -236,6 +236,7 @@ LLM_CONFIG_NAMES = (
     "HostedVLLMResponsesAPIConfig",
     "VolcEngineResponsesAPIConfig",
     "PerplexityResponsesConfig",
+    "OCAResponsesAPIConfig",
     "DatabricksResponsesAPIConfig",
     "OpenRouterResponsesAPIConfig",
     "BedrockMantleResponsesAPIConfig",
@@ -958,6 +959,10 @@ _LLM_CONFIGS_IMPORT_MAP = {
     "PerplexityResponsesConfig": (
         ".llms.perplexity.responses.transformation",
         "PerplexityResponsesConfig",
+    ),
+    "OCAResponsesAPIConfig": (
+        ".llms.oca.responses.transformation",
+        "OCAResponsesAPIConfig",
     ),
     "DatabricksResponsesAPIConfig": (
         ".llms.databricks.responses.transformation",

@@ -432,7 +432,7 @@ class OCIEmbedResponse(BaseModel):
     id: Optional[str] = None  # present in the official SDK response
     embeddings: List[List[float]]
     modelId: str
-    modelVersion: str
+    modelVersion: Optional[str] = None
     # OCI returns per-input token counts in inputTextTokenCounts (summed for total usage)
     inputTextTokenCounts: Optional[List[int]] = None
     # Some deployments may return a usage object instead

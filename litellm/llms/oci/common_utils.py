@@ -1,4 +1,5 @@
 import base64
+import configparser
 import hashlib
 import json
 import os
@@ -151,6 +152,38 @@ _OCI_TENANCY_ENV = "OCI_TENANCY"
 _OCI_KEY_FILE_ENV = "OCI_KEY_FILE"
 _OCI_KEY_ENV = "OCI_KEY"
 _OCI_COMPARTMENT_ID_ENV = "OCI_COMPARTMENT_ID"
+_OCI_CONFIG_FILE_ENV = "OCI_CONFIG_FILE"
+_OCI_CONFIG_PROFILE_ENV = "OCI_CONFIG_PROFILE"
+
+
+def _load_oci_config_profile(optional_params: dict) -> dict:
+    """Load an OCI CLI profile without requiring the OCI Python SDK."""
+    configured_path = optional_params.get("oci_config_file") or os.environ.get(_OCI_CONFIG_FILE_ENV)
+    if not configured_path:
+        return {}
+
+    config_path = os.path.abspath(os.path.expanduser(str(configured_path)))
+    profile = str(optional_params.get("oci_config_profile") or os.environ.get(_OCI_CONFIG_PROFILE_ENV) or "DEFAULT")
+    parser = configparser.RawConfigParser()
+    if not parser.read(config_path):
+        raise OCIError(status_code=401, message=f"OCI config file not found: {config_path}")
+    if profile != "DEFAULT" and not parser.has_section(profile):
+        raise OCIError(status_code=401, message=f"OCI config profile {profile!r} not found in {config_path}")
+
+    section = parser.defaults() if profile == "DEFAULT" else dict(parser.items(profile))
+    result = dict(section)
+    key_file = result.get("key_file")
+    if key_file:
+        result["key_file"] = os.path.abspath(os.path.expanduser(key_file))
+    token_file = result.get("security_token_file")
+    if token_file:
+        token_path = os.path.abspath(os.path.expanduser(token_file))
+        try:
+            with open(token_path, encoding="utf-8") as token_handle:
+                result["security_token"] = token_handle.read().strip()
+        except OSError as exc:
+            raise OCIError(status_code=401, message=f"Unable to read OCI security token file: {token_path}") from exc
+    return result
 
 
 def resolve_oci_credentials(optional_params: dict) -> dict:
@@ -162,15 +195,40 @@ def resolve_oci_credentials(optional_params: dict) -> dict:
         oci_region, oci_user, oci_fingerprint, oci_tenancy,
         oci_key, oci_key_file, oci_compartment_id
     """
+    profile = _load_oci_config_profile(optional_params)
+    tenancy = optional_params.get("oci_tenancy") or os.environ.get(_OCI_TENANCY_ENV) or profile.get("tenancy")
     return {
-        "oci_region": optional_params.get("oci_region") or os.environ.get(_OCI_REGION_ENV) or "us-ashburn-1",
-        "oci_user": optional_params.get("oci_user") or os.environ.get(_OCI_USER_ENV),
-        "oci_fingerprint": optional_params.get("oci_fingerprint") or os.environ.get(_OCI_FINGERPRINT_ENV),
-        "oci_tenancy": optional_params.get("oci_tenancy") or os.environ.get(_OCI_TENANCY_ENV),
+        "oci_region": optional_params.get("oci_region")
+        or os.environ.get(_OCI_REGION_ENV)
+        or profile.get("region")
+        or "us-ashburn-1",
+        "oci_user": optional_params.get("oci_user") or os.environ.get(_OCI_USER_ENV) or profile.get("user"),
+        "oci_fingerprint": optional_params.get("oci_fingerprint")
+        or os.environ.get(_OCI_FINGERPRINT_ENV)
+        or profile.get("fingerprint"),
+        "oci_tenancy": tenancy,
         "oci_key": optional_params.get("oci_key") or os.environ.get(_OCI_KEY_ENV),
-        "oci_key_file": optional_params.get("oci_key_file") or os.environ.get(_OCI_KEY_FILE_ENV),
-        "oci_compartment_id": optional_params.get("oci_compartment_id") or os.environ.get(_OCI_COMPARTMENT_ID_ENV),
+        "oci_key_file": optional_params.get("oci_key_file")
+        or os.environ.get(_OCI_KEY_FILE_ENV)
+        or profile.get("key_file"),
+        "oci_security_token": profile.get("security_token"),
+        "oci_compartment_id": optional_params.get("oci_compartment_id")
+        or os.environ.get(_OCI_COMPARTMENT_ID_ENV)
+        or profile.get("compartment_id"),
     }
+
+
+def has_oci_signing_credentials(credentials: dict) -> bool:
+    """Return whether resolved profile/env credentials can sign a request."""
+    has_key = bool(credentials.get("oci_key") or credentials.get("oci_key_file"))
+    if credentials.get("oci_security_token"):
+        return has_key
+    return bool(
+        credentials.get("oci_user")
+        and credentials.get("oci_fingerprint")
+        and credentials.get("oci_tenancy")
+        and has_key
+    )
 
 
 _OCI_REGION_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}[a-z0-9]$")
@@ -208,10 +266,11 @@ def sign_with_oci_signer(
     optional_params: dict,
     request_data: dict,
     api_base: str,
+    request_body: Optional[bytes] = None,
 ) -> Tuple[dict, bytes]:
     """Sign a request using an OCI SDK Signer object passed in optional_params."""
     oci_signer = optional_params.get("oci_signer")
-    body = json.dumps(request_data).encode("utf-8")
+    body = request_body if request_body is not None else json.dumps(request_data).encode("utf-8")
     method = str(optional_params.get("method", "POST")).upper()
 
     if method not in {"POST", "GET", "PUT", "DELETE", "PATCH"}:
@@ -248,6 +307,7 @@ def sign_with_manual_credentials(
     optional_params: dict,
     request_data: dict,
     api_base: str,
+    request_body: Optional[bytes] = None,
 ) -> Tuple[dict, bytes]:
     """Sign a request using manually provided OCI credentials (user/fingerprint/tenancy/key)."""
     creds = resolve_oci_credentials(optional_params)
@@ -257,20 +317,19 @@ def sign_with_manual_credentials(
     oci_key = creds["oci_key"]
     oci_key_file = creds["oci_key_file"]
 
-    if not oci_user or not oci_fingerprint or not oci_tenancy or not (oci_key or oci_key_file):
+    security_token = creds.get("oci_security_token")
+    if not has_oci_signing_credentials(creds):
         raise OCIError(
             status_code=401,
             message=(
-                "Missing required OCI credentials: oci_user, oci_fingerprint, oci_tenancy, "
-                "and at least one of oci_key or oci_key_file. "
-                "These can also be supplied via environment variables: "
-                f"{_OCI_USER_ENV}, {_OCI_FINGERPRINT_ENV}, {_OCI_TENANCY_ENV}, {_OCI_KEY_ENV} (or {_OCI_KEY_FILE_ENV}). "
-                "Alternatively, provide an oci_signer object from the OCI SDK."
+                "Missing required OCI credentials. Configure oci_config_file/OCI_CONFIG_FILE "
+                "and oci_config_profile/OCI_CONFIG_PROFILE, provide an oci_signer, or supply the "
+                "standard OCI credential fields."
             ),
         )
 
     method = str(optional_params.get("method", "POST")).upper()
-    body = json.dumps(request_data).encode("utf-8")
+    body = request_body if request_body is not None else json.dumps(request_data).encode("utf-8")
     parsed = urlparse(api_base)
     path = parsed.path or "/"
     host = parsed.netloc
@@ -334,7 +393,7 @@ def sign_with_manual_credentials(
     )
     signature_b64 = base64.b64encode(signature).decode()
 
-    key_id = f"{oci_tenancy}/{oci_user}/{oci_fingerprint}"
+    key_id = f"ST${security_token}" if security_token else f"{oci_tenancy}/{oci_user}/{oci_fingerprint}"
     authorization = (
         'Signature version="1",'
         f'keyId="{key_id}",'
@@ -381,6 +440,30 @@ def sign_oci_request(
     return sign_with_manual_credentials(headers, optional_params, request_data, api_base)
 
 
+def sign_oci_request_bytes(
+    headers: dict,
+    optional_params: dict,
+    request_body: bytes,
+    api_base: str,
+) -> Tuple[dict, bytes]:
+    """Sign an already-encoded request body, including multipart payloads."""
+    if optional_params.get("oci_signer") is not None:
+        return sign_with_oci_signer(
+            headers,
+            optional_params,
+            {},
+            api_base,
+            request_body=request_body,
+        )
+    return sign_with_manual_credentials(
+        headers,
+        optional_params,
+        {},
+        api_base,
+        request_body=request_body,
+    )
+
+
 def validate_oci_environment(
     headers: dict,
     optional_params: dict,
@@ -396,6 +479,43 @@ def validate_oci_environment(
     headers.setdefault("content-type", "application/json")
     headers.setdefault("user-agent", f"litellm/{_litellm_version}")
     return headers
+
+
+def validate_oci_openai_compatible_environment(
+    headers: dict,
+    optional_params: dict,
+    api_key: Optional[str] = None,
+) -> dict:
+    """Add OCI's required compartment header for OpenAI-compatible APIs.
+
+    OCI's native inference APIs carry the compartment in their JSON request
+    body. Its OpenAI-compatible APIs instead require ``opc-compartment-id``.
+    Resolve that value through the same OCI credential/session configuration as
+    the signer, so image and transcription requests do not need separate
+    configuration.
+    """
+    headers = validate_oci_environment(headers, optional_params, api_key)
+    compartment_id = resolve_oci_credentials(optional_params).get("oci_compartment_id")
+    if not compartment_id:
+        raise OCIError(
+            status_code=400,
+            message=(
+                "oci_compartment_id is required for OCI OpenAI-compatible requests. "
+                "Pass it as a LiteLLM parameter or set OCI_COMPARTMENT_ID."
+            ),
+        )
+
+    # Respect an explicitly supplied header, independent of its casing.
+    if not any(name.lower() == "opc-compartment-id" for name in headers):
+        headers["opc-compartment-id"] = compartment_id
+    return headers
+
+
+def strip_oci_transport_params(params: Any) -> dict:
+    """Remove OCI session/signing settings from an OpenAI-compatible payload."""
+    if not isinstance(params, dict):
+        return {}
+    return {key: value for key, value in params.items() if not key.startswith("oci_")}
 
 
 # ---------------------------------------------------------------------------

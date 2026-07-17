@@ -285,6 +285,29 @@ class TestOCIEmbeddingConfig:
         assert result.usage.prompt_tokens == 9
         assert result.usage.total_tokens == 9
 
+    def test_transform_embedding_response_without_model_version(self):
+        config = OCIEmbeddingConfig()
+        mock_response = httpx.Response(
+            status_code=200,
+            json={key: value for key, value in MOCK_OCI_EMBEDDING_RESPONSE.items() if key != "modelVersion"},
+            request=httpx.Request("POST", "https://test.com"),
+        )
+
+        result = config.transform_embedding_response(
+            model=TEST_MODEL_NAME,
+            raw_response=mock_response,
+            model_response=EmbeddingResponse(),
+            logging_obj=MagicMock(),
+            api_key=None,
+            request_data={},
+            optional_params={},
+            litellm_params={},
+        )
+
+        assert result.model == TEST_MODEL_NAME
+        assert result.data[0]["embedding"] == [0.1, 0.2, 0.3, 0.4]
+        assert result.usage.total_tokens == 9
+
     def test_transform_embedding_response_error(self):
         """test non-200 status code raises OCIError."""
         from litellm.llms.oci.common_utils import OCIError

@@ -1938,6 +1938,9 @@ if TYPE_CHECKING:
     from .llms.github_copilot.responses.transformation import (
         GithubCopilotResponsesAPIConfig as GithubCopilotResponsesAPIConfig,
     )
+    from .llms.oca.responses.transformation import (
+        OCAResponsesAPIConfig as OCAResponsesAPIConfig,
+    )
     from .llms.github_copilot.embedding.transformation import (
         GithubCopilotEmbeddingConfig as GithubCopilotEmbeddingConfig,
     )

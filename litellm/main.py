@@ -7573,6 +7573,22 @@ def transcription(
             max_retries=max_retries,
             litellm_params=litellm_params_dict,
         )
+    elif custom_llm_provider == "oci":
+        from litellm.llms.oci.audio_transcription.transformation import audio_transcriptions as oci_transcriptions
+
+        litellm_params_dict["api_base"] = api_base
+        response = oci_transcriptions(
+            model=model,
+            audio_file=file,
+            optional_params=optional_params,
+            litellm_params=litellm_params_dict,
+            logging_obj=litellm_logging_obj,
+            timeout=timeout,
+            api_base=api_base,
+            headers=extra_headers or {},
+            client=client,
+            is_async=atranscription,
+        )
     elif custom_llm_provider == "openai" or (custom_llm_provider in litellm.openai_compatible_providers):
         api_base = (
             api_base

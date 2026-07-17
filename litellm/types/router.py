@@ -201,6 +201,11 @@ class CredentialLiteLLMParams(BaseModel):
     s3_bucket_name: Optional[str] = None
     ## IBM WATSONX ##
     watsonx_region_name: Optional[str] = None
+    ## OCI ##
+    oci_config_file: Optional[str] = None
+    oci_config_profile: Optional[str] = None
+    oci_region: Optional[str] = None
+    oci_compartment_id: Optional[str] = None
 
 
 _RESERVED_INIT_KEYS = frozenset({"self", "params", "__class__"})

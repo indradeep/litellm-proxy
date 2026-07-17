@@ -33,6 +33,7 @@ from litellm.llms.oci.common_utils import (
     OCI_API_VERSION,
     OCIError,
     get_oci_base_url,
+    has_oci_signing_credentials,
     resolve_oci_credentials,
     sign_oci_request,
     validate_oci_environment,
@@ -115,25 +116,12 @@ class OCIEmbedConfig(BaseEmbeddingConfig):
     ) -> dict:
         if optional_params.get("oci_signer") is None:
             creds = resolve_oci_credentials(optional_params)
-            missing = [
-                k
-                for k in (
-                    "oci_user",
-                    "oci_fingerprint",
-                    "oci_tenancy",
-                    "oci_compartment_id",
-                )
-                if not creds.get(k)
-            ]
-            if missing or not (creds.get("oci_key") or creds.get("oci_key_file")):
+            if not has_oci_signing_credentials(creds) or not creds.get("oci_compartment_id"):
                 raise OCIError(
                     status_code=401,
                     message=(
-                        "Missing required parameters: oci_user, oci_fingerprint, oci_tenancy, "
-                        "oci_compartment_id and at least one of oci_key or oci_key_file. "
-                        "These can be supplied via optional_params or via OCI_USER, OCI_FINGERPRINT, "
-                        "OCI_TENANCY, OCI_COMPARTMENT_ID, OCI_KEY_FILE environment variables. "
-                        "Alternatively, provide an oci_signer object from the OCI SDK."
+                        "Missing required parameters: OCI credentials are incomplete. Configure an OCI config profile, "
+                        "provide an oci_signer, or supply the standard OCI credential fields."
                     ),
                 )
         return validate_oci_environment(headers, optional_params, api_key)

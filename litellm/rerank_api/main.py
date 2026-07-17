@@ -496,6 +496,23 @@ def rerank(
                 model_response=model_response,
                 litellm_params=rerank_litellm_params,
             )
+        elif _custom_llm_provider == litellm.LlmProviders.OCI:
+            from litellm.llms.oci.rerank.transformation import OCIRerankConfig, rerank as oci_rerank
+
+            if not isinstance(rerank_provider_config, OCIRerankConfig):
+                raise ValueError("OCI rerank config was not registered")
+            response = oci_rerank(
+                model=model,
+                provider_config=rerank_provider_config,
+                optional_rerank_params=optional_rerank_params,
+                logging_obj=litellm_logging_obj,
+                timeout=optional_params.timeout,
+                api_base=dynamic_api_base or optional_params.api_base,
+                headers=headers or litellm.headers or {},
+                litellm_params=rerank_litellm_params,
+                client=client,
+                is_async=_is_async,
+            )
         else:
             # Generic handler for all providers that use base_llm_http_handler
             # Provider-specific logic (API key validation, URL generation, etc.)

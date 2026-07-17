@@ -380,6 +380,21 @@ def image_generation(
                 headers=headers,
                 litellm_params=litellm_params_dict,
             )
+        elif custom_llm_provider == "oci":
+            from litellm.llms.oci.image_generation.transformation import image_generation as oci_image_generation
+
+            litellm_params_dict["api_base"] = api_base
+            return oci_image_generation(
+                model=model,
+                prompt=prompt,
+                optional_params=optional_params,
+                litellm_params=litellm_params_dict,
+                headers=headers,
+                logging_obj=litellm_logging_obj,
+                timeout=timeout,
+                client=client,
+                is_async=aimg_generation,
+            )
         #########################################################
         # Providers using llm_http_handler
         #########################################################
